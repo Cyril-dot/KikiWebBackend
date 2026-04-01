@@ -6,7 +6,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "users")
+@Table(name = "bet_users")
 @Getter
 @Setter
 @NoArgsConstructor
