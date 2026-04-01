@@ -6,6 +6,7 @@ import com.kikiBettingWebBack.KikiWebSite.entities.GameStatus;
 import com.kikiBettingWebBack.KikiWebSite.exceptions.BadRequestException;
 import com.kikiBettingWebBack.KikiWebSite.exceptions.ResourceNotFoundException;
 import com.kikiBettingWebBack.KikiWebSite.repos.BetSelectionRepository;
+import com.kikiBettingWebBack.KikiWebSite.repos.CorrectScoreOptionRepository;
 import com.kikiBettingWebBack.KikiWebSite.repos.GameRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +27,7 @@ public class GameService {
 
     private final GameRepository gameRepository;
     private final BetSelectionRepository betSelectionRepository;
-
+    private final CorrectScoreOptionRepository correctScoreOptionRepository;
     // ---------------------------------------------------------------
     // ADD GAME
     // ---------------------------------------------------------------
@@ -99,10 +100,12 @@ public class GameService {
     // ---------------------------------------------------------------
     // REMOVE GAME — admin can delete any game regardless of status
     // ---------------------------------------------------------------
+    // In GameService.java
     @Transactional
     public void removeGame(UUID gameId) {
         Game game = getGameOrThrow(gameId);
-        betSelectionRepository.deleteByGameId(gameId); // wipe selections first
+        betSelectionRepository.deleteByGameId(gameId);        // already there ✓
+        correctScoreOptionRepository.deleteByGameId(gameId);  // ← ADD THIS LINE
         gameRepository.delete(game);
         log.info("Game force-deleted: {} (status was: {})", gameId, game.getStatus());
     }
