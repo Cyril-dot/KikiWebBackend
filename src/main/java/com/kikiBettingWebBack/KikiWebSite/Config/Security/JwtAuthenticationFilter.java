@@ -46,7 +46,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             "/actuator/",
             "/ws/",
             "/ws-meeting/",
-            "/.well-known/"
+            "/.well-known/",
+            "/fetch/api/games/"
     );
 
     @Override

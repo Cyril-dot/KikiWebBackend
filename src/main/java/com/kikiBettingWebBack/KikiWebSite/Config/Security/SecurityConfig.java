@@ -51,7 +51,8 @@ public class SecurityConfig {
                                 "/test/**",
                                 "/api/v1/football/**",   // your v1 football controller
                                 "/api/football/**",      // your /api/football controller
-                                "/api/v1/payment/webhook"
+                                "/api/v1/payment/webhook",
+                                "/fetch/api/games/**"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )

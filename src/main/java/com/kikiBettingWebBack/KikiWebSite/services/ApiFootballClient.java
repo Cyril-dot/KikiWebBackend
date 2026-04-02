@@ -22,11 +22,11 @@ public class ApiFootballClient {
     // ══════════════════════════════════════════════════════════════
 
     // football-data.org
-    private static final String FD_API_KEY  = "3df294e03628423ab00ca624a294fe2f";
+    private static final String FD_API_KEY  = "38e63192b2dd49f2a9d541769c9ecea7";
     private static final String FD_BASE_URL = "https://api.football-data.org/v4";
 
     // api-sports.io (api-football)
-    private static final String AF_API_KEY  = "9d6a776df560c09ed3b71cad0b6406e9";
+    private static final String AF_API_KEY  = "445e06863cad6598557f8d6e37b25e6b";
     private static final String AF_BASE_URL = "https://v3.football.api-sports.io";
 
     private final ObjectMapper        objectMapper;

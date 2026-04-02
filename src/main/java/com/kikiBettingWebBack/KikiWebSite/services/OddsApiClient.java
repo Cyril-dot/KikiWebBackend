@@ -21,7 +21,7 @@ public class OddsApiClient {
     // Key2 is optional — leave as empty string if you only have one
     // ══════════════════════════════════════════════════════════════
 
-    private static final String ODDS_API_KEY_1   = "1436d615d4e1161c27cd9eaac9362a83";
+    private static final String ODDS_API_KEY_1   = "7282ca3ef0fc2e751b1946253754bebd";
     private static final String ODDS_API_KEY_2   = "d98835812b3540078d9263650e431cd6";   // optional second key
     private static final String ODDS_API_BASE    = "https://api.the-odds-api.com/v4";
 

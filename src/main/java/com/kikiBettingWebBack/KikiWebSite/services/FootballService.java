@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 public class FootballService {
 
     // ── API credentials ───────────────────────────────────────────────────────
-    private static final String FD_API_KEY  = "be1005d63c744335b70addc178dfce37";
+    private static final String FD_API_KEY  = "38e63192b2dd49f2a9d541769c9ecea7";
     private static final String FD_BASE_URL = "https://api.football-data.org/v4";
 
     @Qualifier("genericWebClient")

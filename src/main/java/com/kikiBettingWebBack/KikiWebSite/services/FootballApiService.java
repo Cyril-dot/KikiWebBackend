@@ -20,7 +20,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class FootballApiService {
 
-    private static final String API_KEY          = "be1005d63c744335b70addc178dfce37";
+    private static final String API_KEY          = "ffe42eb2b40046dfa0c6499921113213";
     private static final String BASE_URL         = "https://api.football-data.org/v4";
     private static final String DEFAULT_COMP_IDS = "2021,2001,2014,2002,2019,2015";
 
@@ -147,18 +147,26 @@ public class FootballApiService {
                 LiveGameResponse dto = new LiveGameResponse();
                 String status  = m.path("status").asText("SCHEDULED");
                 boolean isLive = status.equals("IN_PLAY") || status.equals("PAUSED");
+
                 dto.setFixtureId(m.path("id").asLong());
                 dto.setKickoff(m.path("utcDate").asText());
                 dto.setHomeTeam(teamName(m, "homeTeam"));
                 dto.setAwayTeam(teamName(m, "awayTeam"));
-                dto.setHomeScore(score(m, "home"));
-                dto.setAwayScore(score(m, "away"));
+
+                // FIX: pass status so score() knows which node to prefer
+                dto.setHomeScore(score(m, "home", status));
+                dto.setAwayScore(score(m, "away", status));
+
                 dto.setStatusShort(status);
                 dto.setStatusLong(status);
+
+                // FIX: pass full match node so parseElapsed can read status
                 dto.setElapsed(isLive ? parseElapsed(m) : null);
+
                 dto.setLeague(m.path("competition").path("name").asText(""));
                 dto.setCountry(m.path("area").path("name").asText(""));
                 dto.setRound(m.path("season").path("currentMatchday").asText(""));
+
                 results.add(dto);
             } catch (Exception e) {
                 log.warn("⚠️ Skipping malformed match: {}", e.getMessage());
@@ -202,20 +210,61 @@ public class FootballApiService {
         return (shortName != null && !shortName.isBlank()) ? shortName : t.path("name").asText("TBD");
     }
 
-    private int score(JsonNode match, String side) {
-        JsonNode ft = match.path("score").path("fullTime").path(side);
-        if (!ft.isNull() && ft.isNumber()) return ft.asInt();
-        JsonNode ht = match.path("score").path("halfTime").path(side);
-        if (!ht.isNull() && ht.isNumber()) return ht.asInt();
+    /**
+     * FIX: For IN_PLAY and PAUSED, the API populates score.fullTime with the
+     * current/live score. The old code fell back to halfTime on null fullTime,
+     * which could show 0-0 at half when the real score was e.g. 2-1.
+     *
+     * For FINISHED games, fullTime is the final score — still correct to use first.
+     * halfTime fallback is kept only as a genuine last resort.
+     */
+    private int score(JsonNode match, String side, String status) {
+        JsonNode scoreNode = match.path("score");
+
+        // Live or paused: current score lives in fullTime during the match
+        JsonNode current = scoreNode.path("fullTime").path(side);
+        if (!current.isNull() && current.isNumber()) return current.asInt();
+
+        // Finished: fullTime is the final score — same node, already handled above.
+        // halfTime fallback only if fullTime is genuinely absent (shouldn't happen).
+        if (!status.equals("IN_PLAY") && !status.equals("PAUSED")) {
+            JsonNode ht = scoreNode.path("halfTime").path(side);
+            if (!ht.isNull() && ht.isNumber()) return ht.asInt();
+        }
+
         return 0;
     }
 
+    /**
+     * FIX: Old version ignored the ~15-minute halftime break, causing elapsed
+     * to read e.g. 60' when the real minute was 45' (second half just started).
+     *
+     * Strategy:
+     *  - PAUSED  → always return 45 (half time)
+     *  - IN_PLAY, mins <= 52 → first half, return raw minutes (capped at 45)
+     *  - IN_PLAY, mins >  52 → second half started; subtract 15 min HT break
+     */
     private Integer parseElapsed(JsonNode match) {
         try {
+            String status  = match.path("status").asText("");
             Instant kickoff = Instant.parse(match.path("utcDate").asText());
             long mins = ChronoUnit.MINUTES.between(kickoff, Instant.now());
-            return (int) Math.min(mins, 90);
+
+            if (status.equals("PAUSED")) {
+                return 45;
+            }
+
+            // First half: kickoff up to ~52 min wall-clock (45 + small buffer)
+            if (mins <= 52) {
+                return (int) Math.min(mins, 45);
+            }
+
+            // Second half: subtract the halftime break (~15 min)
+            long adjusted = mins - 15;
+            return (int) Math.min(adjusted, 90);
+
         } catch (Exception e) {
+            log.warn("⚠️ parseElapsed failed: {}", e.getMessage());
             return null;
         }
     }
