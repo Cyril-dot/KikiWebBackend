@@ -2,11 +2,10 @@ package com.kikiBettingWebBack.KikiWebSite.services;
 
 import com.kikiBettingWebBack.KikiWebSite.dtos.*;
 import com.kikiBettingWebBack.KikiWebSite.entities.*;
+import com.kikiBettingWebBack.KikiWebSite.repos.AdminRepository;
 import com.kikiBettingWebBack.KikiWebSite.repos.BookingCodeGameRepository;
 import com.kikiBettingWebBack.KikiWebSite.repos.BookingCodeRepository;
 import com.kikiBettingWebBack.KikiWebSite.repos.GameRepository;
-import com.kikiBettingWebBack.KikiWebSite.repos.UserRepository;
-import com.kikiBettingWebBack.KikiWebSite.services.BookingCodeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -24,20 +23,19 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-// NOTE: unused import 'com.kikiBettingWebBack.KikiWebSite.services.BookingCodeService' removed above
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BookingCodeServiceImpl implements BookingCodeService {
 
-    private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no confusable chars
+    private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     private static final int CODE_SEGMENT_LENGTH = 4;
     private static final int MAX_CODE_GEN_ATTEMPTS = 10;
 
     private final BookingCodeRepository bookingCodeRepository;
     private final BookingCodeGameRepository bookingCodeGameRepository;
-    private final UserRepository userRepository;
+    private final AdminRepository adminRepository;
     private final GameRepository gameRepository;
 
     private final SecureRandom secureRandom = new SecureRandom();
@@ -49,8 +47,8 @@ public class BookingCodeServiceImpl implements BookingCodeService {
     @Override
     @Transactional
     public BookingCodeResponse createBookingCode(CreateBookingCodeRequest request, UUID adminId) {
-        User admin = userRepository.findById(adminId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Admin user not found"));
+        Admin admin = adminRepository.findById(adminId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Admin not found"));
 
         // Validate no duplicate games within this slip
         List<UUID> gameIds = request.getGames().stream()
@@ -79,7 +77,7 @@ public class BookingCodeServiceImpl implements BookingCodeService {
             }
         }
 
-        // Calculate combined odds (product of all individual odds)
+        // Calculate combined odds
         BigDecimal combinedOdds = request.getGames().stream()
                 .map(CreateBookingCodeRequest.BookingCodeGameRequest::getOdds)
                 .reduce(BigDecimal.ONE, BigDecimal::multiply)
@@ -111,7 +109,7 @@ public class BookingCodeServiceImpl implements BookingCodeService {
             Game game = games.stream()
                     .filter(g -> g.getId().equals(gr.getGameId()))
                     .findFirst()
-                    .orElseThrow(); // already validated above
+                    .orElseThrow();
 
             BookingCodeGame bcGame = BookingCodeGame.builder()
                     .bookingCode(bookingCode)
@@ -194,7 +192,7 @@ public class BookingCodeServiceImpl implements BookingCodeService {
     // ──────────────────────────────────────────────────────────────────────────
 
     @Override
-    @Scheduled(fixedRate = 60_000) // runs every 60 seconds
+    @Scheduled(fixedRate = 60_000)
     @Transactional
     public void expireOverdueCodes() {
         List<BookingCode> overdue = bookingCodeRepository.findExpiredActiveCodes(LocalDateTime.now());
@@ -210,11 +208,6 @@ public class BookingCodeServiceImpl implements BookingCodeService {
     // HELPERS
     // ──────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Generates a unique "XXXX-XXXX" code using a SecureRandom character set
-     * that avoids visually confusable characters (0/O, 1/I/L).
-     * Retries up to MAX_CODE_GEN_ATTEMPTS if a collision is found.
-     */
     private String generateUniqueCode() {
         for (int attempt = 0; attempt < MAX_CODE_GEN_ATTEMPTS; attempt++) {
             String candidate = randomSegment() + "-" + randomSegment();
@@ -234,11 +227,6 @@ public class BookingCodeServiceImpl implements BookingCodeService {
         return sb.toString();
     }
 
-    /**
-     * Maps a BookingCode entity to the response DTO.
-     *
-     * @param includeAdminFields  true when responding to admin — includes createdByEmail
-     */
     private BookingCodeResponse toResponse(BookingCode bc, boolean includeAdminFields) {
         List<BookingCodeResponse.BookingCodeGameResponse> gameResponses = bc.getGames().stream()
                 .map(bcg -> BookingCodeResponse.BookingCodeGameResponse.builder()
