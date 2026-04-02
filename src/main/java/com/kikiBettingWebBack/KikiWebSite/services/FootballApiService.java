@@ -6,7 +6,10 @@ import com.kikiBettingWebBack.KikiWebSite.dtos.LiveGameResponse;
 import com.kikiBettingWebBack.KikiWebSite.dtos.UpcomingFixtureResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.*;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -20,8 +23,8 @@ import java.util.List;
 @RequiredArgsConstructor
 public class FootballApiService {
 
-    private static final String API_KEY  = "be1005d63c744335b70addc178dfce37";
-    private static final String BASE_URL = "https://api.football-data.org/v4";
+    private static final String API_KEY          = "be1005d63c744335b70addc178dfce37";
+    private static final String BASE_URL         = "https://api.football-data.org/v4";
     private static final String DEFAULT_COMP_IDS = "2021,2001,2014,2002,2019,2015";
 
     private final RestTemplate restTemplate;
@@ -29,32 +32,54 @@ public class FootballApiService {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /** Live games across all default competitions — always returns a list, never throws. */
+    /**
+     * Live games across all default competitions.
+     * Cached for 60 seconds — live scores change frequently.
+     * Always returns a list, never throws.
+     */
+    @Cacheable(value = "apiLive", unless = "#result == null")
     public List<LiveGameResponse> getLiveGames() {
+        log.info("📡 [CACHE MISS] Fetching live games from football-data.org...");
         try {
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS + "&status=IN_PLAY,PAUSED";
             JsonNode root = fetch(url);
-            return parseLiveGames(root);
+            List<LiveGameResponse> games = parseLiveGames(root);
+            log.info("✅ Live games fetched: {}", games.size());
+            return games;
         } catch (Exception e) {
             log.warn("⚠️ getLiveGames failed (returning empty list): {}", e.getMessage());
             return new ArrayList<>();
         }
     }
 
-    /** Live games filtered to specific competition IDs — always returns a list, never throws. */
+    /**
+     * Live games filtered to specific competition IDs.
+     * Cached per league string for 60 seconds.
+     * Always returns a list, never throws.
+     */
+    @Cacheable(value = "apiLiveByLeague", key = "#commaSeparatedCompIds", unless = "#result == null")
     public List<LiveGameResponse> getLiveGamesByLeagues(String commaSeparatedCompIds) {
+        log.info("📡 [CACHE MISS] Fetching live games for leagues: {}", commaSeparatedCompIds);
         try {
             String url = BASE_URL + "/matches?competitions=" + commaSeparatedCompIds + "&status=IN_PLAY,PAUSED";
             JsonNode root = fetch(url);
-            return parseLiveGames(root);
+            List<LiveGameResponse> games = parseLiveGames(root);
+            log.info("✅ Live games by league fetched: {}", games.size());
+            return games;
         } catch (Exception e) {
             log.warn("⚠️ getLiveGamesByLeagues failed (returning empty list): {}", e.getMessage());
             return new ArrayList<>();
         }
     }
 
-    /** Today's upcoming fixtures across all default competitions. */
+    /**
+     * Today's upcoming fixtures across all default competitions.
+     * Cached for 30 minutes — upcoming fixtures don't change often.
+     * Always returns a list, never throws.
+     */
+    @Cacheable(value = "apiUpcoming", unless = "#result == null")
     public List<UpcomingFixtureResponse> getTodayUpcomingFixtures() {
+        log.info("📡 [CACHE MISS] Fetching today's upcoming fixtures...");
         try {
             String today = java.time.LocalDate.now().toString();
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS
@@ -62,30 +87,46 @@ public class FootballApiService {
                     + "&dateTo=" + today
                     + "&status=SCHEDULED,TIMED";
             JsonNode root = fetch(url);
-            return parseUpcomingFixtures(root);
+            List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(root);
+            log.info("✅ Today's upcoming fixtures fetched: {}", fixtures.size());
+            return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ getTodayUpcomingFixtures failed (returning empty list): {}", e.getMessage());
             return new ArrayList<>();
         }
     }
 
-    /** Next 7 days of fixtures for a specific competition. */
+    /**
+     * Next 7 days of fixtures for a specific competition.
+     * Cached per competition ID for 30 minutes.
+     * Always returns a list, never throws.
+     */
+    @Cacheable(value = "apiUpcomingByLeague", key = "#competitionId", unless = "#result == null")
     public List<UpcomingFixtureResponse> getUpcomingByLeague(int competitionId, int ignoredSeason) {
+        log.info("📡 [CACHE MISS] Fetching upcoming fixtures for competition: {}", competitionId);
         try {
             String today  = Instant.now().toString().substring(0, 10);
             String inWeek = Instant.now().plus(7, ChronoUnit.DAYS).toString().substring(0, 10);
             String url = BASE_URL + "/competitions/" + competitionId
                     + "/matches?dateFrom=" + today + "&dateTo=" + inWeek + "&status=SCHEDULED,TIMED";
             JsonNode root = fetch(url);
-            return parseUpcomingFixtures(root);
+            List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(root);
+            log.info("✅ Upcoming fixtures for competition {} fetched: {}", competitionId, fixtures.size());
+            return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ getUpcomingByLeague({}) failed (returning empty list): {}", competitionId, e.getMessage());
             return new ArrayList<>();
         }
     }
 
-    /** Today's finished games with real scores. */
+    /**
+     * Today's finished games with real scores.
+     * Cached for 5 minutes — finished scores don't change.
+     * Always returns a list, never throws.
+     */
+    @Cacheable(value = "apiFinished", unless = "#result == null")
     public List<LiveGameResponse> getTodayFinishedGames() {
+        log.info("📡 [CACHE MISS] Fetching today's finished games...");
         try {
             String today = java.time.LocalDate.now().toString();
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS
@@ -93,11 +134,36 @@ public class FootballApiService {
                     + "&dateTo=" + today
                     + "&status=FINISHED";
             JsonNode root = fetch(url);
-            return parseLiveGames(root);
+            List<LiveGameResponse> games = parseLiveGames(root);
+            log.info("✅ Finished games fetched: {}", games.size());
+            return games;
         } catch (Exception e) {
             log.warn("⚠️ getTodayFinishedGames failed (returning empty list): {}", e.getMessage());
             return new ArrayList<>();
         }
+    }
+
+    // ── Cache eviction schedules ──────────────────────────────────────────────
+
+    /** Evict live cache every 60 seconds so scores stay current. */
+    @Scheduled(fixedDelay = 60 * 1000)
+    @CacheEvict(value = {"apiLive", "apiLiveByLeague"}, allEntries = true)
+    public void evictLiveCache() {
+        log.info("🗑️ apiLive cache evicted — will refresh on next request");
+    }
+
+    /** Evict upcoming cache every 30 minutes — fixtures rarely change. */
+    @Scheduled(fixedDelay = 30 * 60 * 1000)
+    @CacheEvict(value = {"apiUpcoming", "apiUpcomingByLeague"}, allEntries = true)
+    public void evictUpcomingCache() {
+        log.info("🗑️ apiUpcoming cache evicted — will refresh on next request");
+    }
+
+    /** Evict finished cache every 5 minutes. */
+    @Scheduled(fixedDelay = 5 * 60 * 1000)
+    @CacheEvict(value = "apiFinished", allEntries = true)
+    public void evictFinishedCache() {
+        log.info("🗑️ apiFinished cache evicted — will refresh on next request");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -114,10 +180,9 @@ public class FootballApiService {
         try {
             JsonNode root = objectMapper.readTree(response.getBody());
             if (!root.has("matches")) {
-                log.warn("⚠️ Unexpected football-data.org response (no 'matches' key): {}",
+                log.warn("⚠️ Unexpected response (no 'matches' key): {}",
                         response.getBody() == null ? "null" :
                                 response.getBody().substring(0, Math.min(300, response.getBody().length())));
-                // Return a node with an empty matches array instead of throwing
                 return objectMapper.readTree("{\"matches\":[]}");
             }
             return root;
@@ -138,7 +203,7 @@ public class FootballApiService {
             try {
                 LiveGameResponse dto = new LiveGameResponse();
 
-                String status = m.path("status").asText("SCHEDULED");
+                String status  = m.path("status").asText("SCHEDULED");
                 boolean isLive = status.equals("IN_PLAY") || status.equals("PAUSED");
 
                 dto.setFixtureId(m.path("id").asLong());

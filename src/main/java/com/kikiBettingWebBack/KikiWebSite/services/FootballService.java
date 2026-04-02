@@ -7,6 +7,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -23,7 +26,7 @@ import java.util.stream.Collectors;
 public class FootballService {
 
     // ── Hardcoded API credentials ─────────────────────────────────────────────
-    private static final String FD_API_KEY = "be1005d63c744335b70addc178dfce37";
+    private static final String FD_API_KEY  = "be1005d63c744335b70addc178dfce37";
     private static final String FD_BASE_URL = "https://api.football-data.org/v4";
 
     @Qualifier("genericWebClient")
@@ -31,7 +34,7 @@ public class FootballService {
 
     private final ObjectMapper objectMapper;
 
-    @Value("${worldcup.json.url:https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json}")
+    @Value("${worldcup.json.url:https://raw.githubusercontent.com/openfootball/worldcup.json/master/2022/worldcup.json}")
     private String worldCupUrl;
 
     private static final Map<Integer, String[]> COMP_MAP = Map.of(
@@ -45,10 +48,16 @@ public class FootballService {
     private static final String COMP_IDS = COMP_MAP.keySet()
             .stream().map(Object::toString).collect(Collectors.joining(","));
 
-    // ── Public API ───────────────────────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
+    /**
+     * Returns all fixtures (club + WC).
+     * Cached for 30 minutes — first call fetches from API, subsequent calls
+     * are instant until the cache expires or is manually evicted.
+     */
+    @Cacheable(value = "fixtures", unless = "#result == null")
     public Mono<List<MatchDTO>> getAllFixtures() {
-        log.info("📡 Fetching all fixtures (club + WC 2026)...");
+        log.info("📡 [CACHE MISS] Fetching all fixtures (club + WC 2026)...");
         return Mono.zip(fetchClubFixtures(), fetchWorldCupFixtures())
                 .map(tuple -> {
                     List<MatchDTO> all = new ArrayList<>();
@@ -62,8 +71,13 @@ public class FootballService {
                 .onErrorReturn(Collections.emptyList());
     }
 
+    /**
+     * Returns only in-play / paused fixtures.
+     * Cached for 1 minute — live scores change frequently so short TTL.
+     */
+    @Cacheable(value = "live", unless = "#result == null")
     public Mono<List<MatchDTO>> getLiveFixtures() {
-        log.info("📡 Fetching live fixtures...");
+        log.info("📡 [CACHE MISS] Fetching live fixtures...");
         return fdGet("/matches?competitions=" + COMP_IDS + "&status=IN_PLAY,PAUSED")
                 .map(raw -> parseClubMatches(parseJson(raw), true))
                 .doOnSuccess(list -> log.info("✅ Live fixtures fetched: {}", list.size()))
@@ -71,16 +85,36 @@ public class FootballService {
                 .onErrorReturn(Collections.emptyList());
     }
 
-    // ── Club fixtures ────────────────────────────────────────────────────────
+    // ── Cache eviction schedule ───────────────────────────────────────────────
+
+    /**
+     * Evict fixtures cache every 30 minutes so data stays fresh.
+     * Spring will re-fetch from football-data.org on the next request.
+     */
+    @Scheduled(fixedDelay = 30 * 60 * 1000)
+    @CacheEvict(value = "fixtures", allEntries = true)
+    public void evictFixturesCache() {
+        log.info("🗑️ fixtures cache evicted — will refresh on next request");
+    }
+
+    /**
+     * Evict live cache every 60 seconds so scores stay current.
+     */
+    @Scheduled(fixedDelay = 60 * 1000)
+    @CacheEvict(value = "live", allEntries = true)
+    public void evictLiveCache() {
+        log.info("🗑️ live cache evicted — will refresh on next request");
+    }
+
+    // ── Club fixtures ─────────────────────────────────────────────────────────
 
     private Mono<List<MatchDTO>> fetchClubFixtures() {
-        Instant now = Instant.now();
-        String dateFrom = now.toString().substring(0, 10);
-        String dateTo   = now.plus(7, ChronoUnit.DAYS).toString().substring(0, 10);
+        Instant now      = Instant.now();
+        String dateFrom  = now.toString().substring(0, 10);
+        String dateTo    = now.plus(7, ChronoUnit.DAYS).toString().substring(0, 10);
 
         log.info("📅 Fetching club fixtures from {} to {}", dateFrom, dateTo);
 
-        // Upcoming fixtures (next 7 days)
         Mono<List<MatchDTO>> upcoming = fdGet(
                 "/matches?competitions=" + COMP_IDS + "&dateFrom=" + dateFrom + "&dateTo=" + dateTo)
                 .map(raw -> parseClubMatches(parseJson(raw), false))
@@ -88,7 +122,6 @@ public class FootballService {
                 .doOnError(e -> logHttpError("Club upcoming", e))
                 .onErrorReturn(Collections.emptyList());
 
-        // Live fixtures right now
         Mono<List<MatchDTO>> live = fdGet(
                 "/matches?competitions=" + COMP_IDS + "&status=IN_PLAY,PAUSED")
                 .map(raw -> parseClubMatches(parseJson(raw), true))
@@ -96,9 +129,9 @@ public class FootballService {
                 .doOnError(e -> logHttpError("Club live", e))
                 .onErrorReturn(Collections.emptyList());
 
-        // Also fetch finished games from today for scores
         Mono<List<MatchDTO>> finished = fdGet(
-                "/matches?competitions=" + COMP_IDS + "&dateFrom=" + dateFrom + "&dateTo=" + dateFrom + "&status=FINISHED")
+                "/matches?competitions=" + COMP_IDS
+                        + "&dateFrom=" + dateFrom + "&dateTo=" + dateFrom + "&status=FINISHED")
                 .map(raw -> parseClubMatches(parseJson(raw), false))
                 .doOnSuccess(list -> log.info("✅ Finished today: {}", list.size()))
                 .doOnError(e -> logHttpError("Club finished", e))
@@ -143,9 +176,9 @@ public class FootballService {
             String[] compInfo = COMP_MAP.get(compId);
             if (compInfo == null) continue;
 
-            String status = m.path("status").asText("SCHEDULED");
+            String status  = m.path("status").asText("SCHEDULED");
             boolean isLive = forceLive || status.equals("IN_PLAY") || status.equals("PAUSED");
-            String uid = "fd-" + m.path("id").asText();
+            String uid     = "fd-" + m.path("id").asText();
 
             result.add(MatchDTO.builder()
                     .uid(uid)
@@ -174,7 +207,7 @@ public class FootballService {
     // ── World Cup fixtures ────────────────────────────────────────────────────
 
     private Mono<List<MatchDTO>> fetchWorldCupFixtures() {
-        log.info("🌍 Fetching WC 2026 fixtures from: {}", worldCupUrl);
+        log.info("🌍 Fetching WC fixtures from: {}", worldCupUrl);
         return genericWebClient.get()
                 .uri(worldCupUrl)
                 .retrieve()
@@ -191,14 +224,13 @@ public class FootballService {
 
         JsonNode rounds = json.path("rounds");
         if (!rounds.isArray()) {
-            // fallback: try flat "matches" array
             JsonNode matches = json.path("matches");
             if (matches.isArray()) return parseWcMatchesFlat(matches);
             log.warn("⚠️ WC JSON has neither 'rounds' nor 'matches' array");
             return result;
         }
 
-        Instant now = Instant.now();
+        Instant now     = Instant.now();
         Instant horizon = now.plus(180, ChronoUnit.DAYS);
         int idx = 0, skipped = 0;
 
@@ -210,10 +242,11 @@ public class FootballService {
             for (JsonNode m : matches) {
                 String dateStr = m.path("date").asText("") + "T15:00:00Z";
                 Instant dt;
-                try { dt = Instant.parse(dateStr); } catch (Exception e) { idx++; skipped++; continue; }
+                try { dt = Instant.parse(dateStr); }
+                catch (Exception e) { idx++; skipped++; continue; }
                 if (dt.isBefore(now) || dt.isAfter(horizon)) { idx++; skipped++; continue; }
 
-                String uid = "wc-" + idx;
+                String uid   = "wc-" + idx;
                 String team1 = m.path("team1").path("name").asText(m.path("team1").asText("TBD"));
                 String team2 = m.path("team2").path("name").asText(m.path("team2").asText("TBD"));
 
@@ -238,13 +271,14 @@ public class FootballService {
 
     private List<MatchDTO> parseWcMatchesFlat(JsonNode matches) {
         List<MatchDTO> result = new ArrayList<>();
-        Instant now = Instant.now();
+        Instant now     = Instant.now();
         Instant horizon = now.plus(180, ChronoUnit.DAYS);
         int idx = 0;
         for (JsonNode m : matches) {
             String dateStr = m.path("date").asText("") + "T15:00:00Z";
             Instant dt;
-            try { dt = Instant.parse(dateStr); } catch (Exception e) { idx++; continue; }
+            try { dt = Instant.parse(dateStr); }
+            catch (Exception e) { idx++; continue; }
             if (dt.isBefore(now) || dt.isAfter(horizon)) { idx++; continue; }
             String uid = "wc-" + idx;
             result.add(MatchDTO.builder()
