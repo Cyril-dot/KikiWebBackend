@@ -1,5 +1,6 @@
 package com.kikiBettingWebBack.KikiWebSite.controllers;
 
+import com.kikiBettingWebBack.KikiWebSite.Config.Security.UserPrincipal;
 import com.kikiBettingWebBack.KikiWebSite.dtos.*;
 import com.kikiBettingWebBack.KikiWebSite.services.BookingCodeService;
 import com.kikiBettingWebBack.KikiWebSite.services.PlacedBetService;
@@ -59,35 +60,27 @@ public class BetController {
     @PostMapping("/place")
     public ResponseEntity<PlacedBetResponse> placeBet(
             @Valid @RequestBody NewPlaceBetRequest request,
-            @AuthenticationPrincipal UUID userId
+            @AuthenticationPrincipal UserPrincipal principal
     ) {
+        UUID userId = principal.getUserId();
         return ResponseEntity.ok(placedBetService.placeBet(request, userId));
     }
 
-    /**
-     * GET /api/bets/my?page=0&size=10
-     *
-     * Paginated list of the authenticated user's placed bets, newest first.
-     */
     @GetMapping("/my")
     public ResponseEntity<Page<PlacedBetResponse>> getMyBets(
-            @AuthenticationPrincipal UUID userId,
+            @AuthenticationPrincipal UserPrincipal userPrincipal,
             @PageableDefault(size = 10) Pageable pageable
     ) {
+        UUID userId = userPrincipal.getUserId();
         return ResponseEntity.ok(placedBetService.getMyBets(userId, pageable));
     }
 
-    /**
-     * GET /api/bets/{reference}
-     *
-     * Look up a single bet by its reference string (e.g. "BET-20240402-A3F9").
-     * Only the owner can view their own bet.
-     */
     @GetMapping("/{reference}")
     public ResponseEntity<PlacedBetResponse> getBetByReference(
             @PathVariable String reference,
-            @AuthenticationPrincipal UUID userId
+            @AuthenticationPrincipal UserPrincipal userPrincipal
     ) {
+        UUID userId = userPrincipal.getUserId();
         return ResponseEntity.ok(placedBetService.getBetByReference(reference, userId));
     }
 }
