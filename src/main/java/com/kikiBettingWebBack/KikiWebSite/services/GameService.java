@@ -1,19 +1,19 @@
 package com.kikiBettingWebBack.KikiWebSite.services;
 
 import com.kikiBettingWebBack.KikiWebSite.dtos.*;
-import com.kikiBettingWebBack.KikiWebSite.entities.Game;
-import com.kikiBettingWebBack.KikiWebSite.entities.GameStatus;
+import com.kikiBettingWebBack.KikiWebSite.entities.*;
 import com.kikiBettingWebBack.KikiWebSite.exceptions.BadRequestException;
 import com.kikiBettingWebBack.KikiWebSite.exceptions.ResourceNotFoundException;
-import com.kikiBettingWebBack.KikiWebSite.repos.BetSelectionRepository;
-import com.kikiBettingWebBack.KikiWebSite.repos.CorrectScoreOptionRepository;
-import com.kikiBettingWebBack.KikiWebSite.repos.GameRepository;
+import com.kikiBettingWebBack.KikiWebSite.repos.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -28,12 +28,16 @@ public class GameService {
     private final GameRepository gameRepository;
     private final BetSelectionRepository betSelectionRepository;
     private final CorrectScoreOptionRepository correctScoreOptionRepository;
+    private final PlacedBetRepository placedBetRepository;
+    private final BookingCodeRepository bookingCodeRepository;
+    private final BookingCodeGameRepository bookingCodeGameRepository;
+    private final WalletRepository walletRepository;
+
     // ---------------------------------------------------------------
     // ADD GAME
     // ---------------------------------------------------------------
     @Transactional
     public GameResponse addGame(AddGameRequest request) {
-
         String bookingCode = resolveBookingCode(request.getBookingCode(), null);
 
         Game game = Game.builder()
@@ -58,7 +62,6 @@ public class GameService {
     // ---------------------------------------------------------------
     @Transactional
     public GameResponse updateGame(UUID gameId, UpdateGameRequest request) {
-
         Game game = getGameOrThrow(gameId);
 
         if (game.getStatus() != GameStatus.UPCOMING) {
@@ -85,7 +88,6 @@ public class GameService {
     public GameResponse updateGameStatus(UUID gameId, GameStatus newStatus) {
         Game game = getGameOrThrow(gameId);
 
-        // Prevent illegal transitions
         if (game.getStatus() == GameStatus.FINISHED || game.getStatus() == GameStatus.CANCELLED) {
             throw new BadRequestException(
                     "Cannot change status of a " + game.getStatus() + " game");
@@ -100,17 +102,57 @@ public class GameService {
     // ---------------------------------------------------------------
     // REMOVE GAME — admin can delete any game regardless of status
     // ---------------------------------------------------------------
-    // In GameService.java
     @Transactional
     public void removeGame(UUID gameId) {
         Game game = getGameOrThrow(gameId);
-        betSelectionRepository.deleteByGameId(gameId);        // already there ✓
-        correctScoreOptionRepository.deleteByGameId(gameId);  // ← ADD THIS LINE
+
+        // 1. Find all BookingCodeGame rows that reference this game
+        List<BookingCodeGame> affectedBcGames = bookingCodeGameRepository.findByGameId(gameId);
+
+        // 2. Collect the parent BookingCode IDs
+        List<UUID> affectedBookingCodeIds = affectedBcGames.stream()
+                .map(bcg -> bcg.getBookingCode().getId())
+                .distinct()
+                .toList();
+
+        // 3. Cancel & refund all pending PlacedBets on those BookingCodes
+        if (!affectedBookingCodeIds.isEmpty()) {
+            List<PlacedBet> pendingBets = placedBetRepository
+                    .findPendingByBookingCodeIds(affectedBookingCodeIds);
+
+            for (PlacedBet bet : pendingBets) {
+                Wallet wallet = walletRepository.findByUserId(bet.getUser().getId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                                "Wallet not found for user " + bet.getUser().getId()));
+                wallet.setBalance(wallet.getBalance().add(bet.getStake()));
+                walletRepository.save(wallet);
+
+                bet.setStatus(BetStatus.CANCELLED);
+                bet.setActualPayout(BigDecimal.ZERO);
+                bet.setSettledAt(LocalDateTime.now());
+            }
+            placedBetRepository.saveAll(pendingBets);
+
+            // 4. Disable affected BookingCodes so users can't load them
+            List<BookingCode> affectedCodes = bookingCodeRepository
+                    .findAllById(affectedBookingCodeIds);
+            affectedCodes.forEach(bc -> bc.setStatus(BookingCodeStatus.DISABLED));
+            bookingCodeRepository.saveAll(affectedCodes);
+        }
+
+        // 5. Delete the BookingCodeGame join rows for this game
+        bookingCodeGameRepository.deleteByGameId(gameId);
+
+        // 6. Delete other dependent data and the game itself
+        betSelectionRepository.deleteByGameId(gameId);
+        correctScoreOptionRepository.deleteByGameId(gameId);
         gameRepository.delete(game);
+
         log.info("Game force-deleted: {} (status was: {})", gameId, game.getStatus());
     }
+
     // ---------------------------------------------------------------
-    // GET ALL GAMES (public) — all statuses, ordered by match date
+    // GET ALL GAMES (public)
     // ---------------------------------------------------------------
     @Transactional(readOnly = true)
     public List<GameResponse> getUpcomingGames() {

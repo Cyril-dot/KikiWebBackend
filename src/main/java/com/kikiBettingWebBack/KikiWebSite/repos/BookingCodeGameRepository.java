@@ -24,6 +24,8 @@ public interface BookingCodeGameRepository extends JpaRepository<BookingCodeGame
     """)
     List<BookingCodeGame> findByBookingCodeIdOrderByPosition(@Param("bookingCodeId") UUID bookingCodeId);
 
+    List<BookingCodeGame> findByGameId(UUID gameId);
+    void deleteByGameId(UUID gameId);
     /**
      * Check whether a specific game is already included in a booking code.
      * Prevents admin from adding the same game twice to one slip.

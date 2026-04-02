@@ -42,6 +42,10 @@ public interface PlacedBetRepository extends JpaRepository<PlacedBet, UUID> {
     """)
     java.math.BigDecimal sumStakesByBookingCodeId(@Param("bookingCodeId") UUID bookingCodeId);
 
+
+    @Query("SELECT pb FROM PlacedBet pb WHERE pb.bookingCode.id IN :bookingCodeIds AND pb.status = 'PENDING'")
+    List<PlacedBet> findPendingByBookingCodeIds(@Param("bookingCodeIds") List<UUID> bookingCodeIds);
+
     /** All PENDING bets on a booking code — for batch settlement. */
     @Query("""
         SELECT pb FROM PlacedBet pb
