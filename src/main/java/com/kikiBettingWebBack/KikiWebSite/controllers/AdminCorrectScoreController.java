@@ -19,23 +19,33 @@ public class AdminCorrectScoreController {
 
     private final CorrectScoreMarketService correctScoreMarketService;
 
-    // POST /api/admin/correct-score/{gameId}/generate
-    // Generate (or regenerate) random score options for a game
+    // ── GET /api/admin/correct-score/{gameId}/options ─────────────────────────
+    // Read existing score options for a game (used by the booking-code form).
+    // Does NOT regenerate — safe to call repeatedly without side effects.
+    @GetMapping("/{gameId}/options")
+    public ResponseEntity<List<CorrectScoreOptionResponse>> getOptions(
+            @PathVariable UUID gameId) {
+        return ResponseEntity.ok(correctScoreMarketService.getOptions(gameId));
+    }
+
+    // ── POST /api/admin/correct-score/{gameId}/generate ───────────────────────
+    // Generate (or regenerate) random score options for a game.
+    // Only works while the market is OPEN.
     @PostMapping("/{gameId}/generate")
     public ResponseEntity<List<CorrectScoreOptionResponse>> generateOptions(
             @PathVariable UUID gameId) {
         return ResponseEntity.ok(correctScoreMarketService.generateOptions(gameId));
     }
 
-    // POST /api/admin/correct-score/{gameId}/lock
-    // Step 1 — lock the market, no new bets accepted, score still hidden
+    // ── POST /api/admin/correct-score/{gameId}/lock ───────────────────────────
+    // Step 1 — lock the market; no new bets accepted, score still hidden.
     @PostMapping("/{gameId}/lock")
     public ResponseEntity<GameResponse> lockMarket(@PathVariable UUID gameId) {
         return ResponseEntity.ok(correctScoreMarketService.lockMarket(gameId));
     }
 
-    // POST /api/admin/correct-score/{gameId}/reveal
-    // Step 2 — reveal the final score and settle all bets
+    // ── POST /api/admin/correct-score/{gameId}/reveal ─────────────────────────
+    // Step 2 — reveal the final score and settle all bets.
     @PostMapping("/{gameId}/reveal")
     public ResponseEntity<GameResponse> revealAndSettle(
             @PathVariable UUID gameId,
