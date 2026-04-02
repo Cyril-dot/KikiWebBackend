@@ -20,7 +20,8 @@ public class RateLimitingProperties {
             "/api/v1/users/register",
             "/api/v1/users/login",
             "/api/v1/admin/login",
-            "/ws/**"              // exclude WebSocket from rate limiting
+            "/ws/**",
+            "/ping/**"
     };
     private boolean trackByIp = true;
     private long maxCacheSize = 100000;
