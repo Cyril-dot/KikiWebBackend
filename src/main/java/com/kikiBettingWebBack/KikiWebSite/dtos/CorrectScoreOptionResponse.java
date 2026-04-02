@@ -17,6 +17,7 @@ public class CorrectScoreOptionResponse {
     private Integer homeScore;
     private Integer awayScore;
     private BigDecimal odds;
+    private String scorePrediction;
 }
 
 // ── Response: full market for a game ─────────────────────────────

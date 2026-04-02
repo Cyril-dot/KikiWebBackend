@@ -356,6 +356,7 @@ public class CorrectScoreMarketService {
                         .homeScore(o.getHomeScore())
                         .awayScore(o.getAwayScore())
                         .odds(o.getOdds())
+                        .scorePrediction(o.getHomeScore() + "-" + o.getAwayScore())
                         .build())
                 .collect(Collectors.toList());
     }
