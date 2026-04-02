@@ -22,10 +22,21 @@ public class Scheduler {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    // Ping every 30 seconds (30,000 ms)
-    @Scheduled(fixedRate = 1000)
-    public void keepAlive() {
+    /**
+     * Ping Render every 3 minutes (180,000 ms) to prevent cold starts.
+     * initialDelay = 60s so it waits for the app to fully start first.
+     */
+    @Scheduled(initialDelay = 60_000, fixedRate = 180_000)
+    public void keepAliveRender() {
         pingRender();
+    }
+
+    /**
+     * Ping DB every 5 minutes (300,000 ms) to keep the connection pool alive.
+     * initialDelay = 90s so it waits for the app to fully start first.
+     */
+    @Scheduled(initialDelay = 90_000, fixedRate = 300_000)
+    public void keepAliveDatabase() {
         pingDatabase();
     }
 
