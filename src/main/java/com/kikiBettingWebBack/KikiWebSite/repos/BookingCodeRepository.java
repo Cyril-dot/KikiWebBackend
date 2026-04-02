@@ -46,4 +46,13 @@ public interface BookingCodeRepository extends JpaRepository<BookingCode, UUID> 
     /** Count bets placed on a booking code — quick stat for admin. */
     @Query("SELECT COUNT(pb) FROM PlacedBet pb WHERE pb.bookingCode.id = :id")
     long countPlacedBetsByBookingCodeId(@Param("id") UUID id);
+
+    Page<BookingCode> findByCreatedByIdAndIncludesScorePredictionFalseOrderByCreatedAtDesc(
+            UUID adminId, Pageable pageable);
+
+    // ── Correct score ────────────────────────────────────────────────────────
+
+    Page<BookingCode> findByCreatedByIdAndIncludesScorePredictionTrueOrderByCreatedAtDesc(
+            UUID adminId, Pageable pageable);
+
 }
