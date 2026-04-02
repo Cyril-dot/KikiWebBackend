@@ -27,94 +27,38 @@ public class FootballApiService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    // ── Manual in-memory cache (safe — no Spring cache proxy issues) ──────────
-    private volatile List<LiveGameResponse>         liveCache          = null;
-    private volatile Instant                        liveCachedAt       = Instant.EPOCH;
-    private static final long                       LIVE_TTL_SECS      = 60;
-
-    private volatile List<LiveGameResponse>         finishedCache      = null;
-    private volatile Instant                        finishedCachedAt   = Instant.EPOCH;
-    private static final long                       FINISHED_TTL_MINS  = 5;
-
-    private volatile List<UpcomingFixtureResponse>  upcomingCache      = null;
-    private volatile Instant                        upcomingCachedAt   = Instant.EPOCH;
-    private static final long                       UPCOMING_TTL_MINS  = 30;
-
-    // Per-league live cache (simple: just cache the last requested league)
-    private volatile String                         lastLeagueKey      = null;
-    private volatile List<LiveGameResponse>         leagueLiveCache    = null;
-    private volatile Instant                        leagueLiveCachedAt = Instant.EPOCH;
-
-    // Per-competition upcoming cache
-    private volatile Integer                        lastCompId         = null;
-    private volatile List<UpcomingFixtureResponse>  compUpcomingCache  = null;
-    private volatile Instant                        compUpcomingCachedAt = Instant.EPOCH;
-
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * Live games across all default competitions.
-     * Cached for 60 seconds. Always returns a list, never throws.
-     */
     public List<LiveGameResponse> getLiveGames() {
-        if (liveCache != null &&
-                Instant.now().isBefore(liveCachedAt.plus(LIVE_TTL_SECS, ChronoUnit.SECONDS))) {
-            log.info("✅ [CACHE HIT] Returning {} cached live games", liveCache.size());
-            return liveCache;
-        }
-        log.info("📡 [CACHE MISS] Fetching live games from football-data.org...");
+        log.info("📡 Fetching live games from football-data.org...");
         try {
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS + "&status=IN_PLAY,PAUSED";
             JsonNode root = fetch(url);
             List<LiveGameResponse> games = parseLiveGames(root);
             log.info("✅ Live games fetched: {}", games.size());
-            liveCache    = games;
-            liveCachedAt = Instant.now();
             return games;
         } catch (Exception e) {
             log.warn("⚠️ getLiveGames failed: {}", e.getMessage());
-            return liveCache != null ? liveCache : new ArrayList<>();
+            return new ArrayList<>();
         }
     }
 
-    /**
-     * Live games filtered to specific competition IDs.
-     * Cached per league string for 60 seconds. Always returns a list, never throws.
-     */
     public List<LiveGameResponse> getLiveGamesByLeagues(String commaSeparatedCompIds) {
-        if (commaSeparatedCompIds.equals(lastLeagueKey) &&
-                leagueLiveCache != null &&
-                Instant.now().isBefore(leagueLiveCachedAt.plus(LIVE_TTL_SECS, ChronoUnit.SECONDS))) {
-            log.info("✅ [CACHE HIT] Returning {} cached live games for leagues: {}", leagueLiveCache.size(), commaSeparatedCompIds);
-            return leagueLiveCache;
-        }
-        log.info("📡 [CACHE MISS] Fetching live games for leagues: {}", commaSeparatedCompIds);
+        log.info("📡 Fetching live games for leagues: {}", commaSeparatedCompIds);
         try {
             String url = BASE_URL + "/matches?competitions=" + commaSeparatedCompIds + "&status=IN_PLAY,PAUSED";
             JsonNode root = fetch(url);
             List<LiveGameResponse> games = parseLiveGames(root);
             log.info("✅ Live games by league fetched: {}", games.size());
-            lastLeagueKey      = commaSeparatedCompIds;
-            leagueLiveCache    = games;
-            leagueLiveCachedAt = Instant.now();
             return games;
         } catch (Exception e) {
             log.warn("⚠️ getLiveGamesByLeagues failed: {}", e.getMessage());
-            return leagueLiveCache != null ? leagueLiveCache : new ArrayList<>();
+            return new ArrayList<>();
         }
     }
 
-    /**
-     * Today's upcoming fixtures across all default competitions.
-     * Cached for 30 minutes. Always returns a list, never throws.
-     */
     public List<UpcomingFixtureResponse> getTodayUpcomingFixtures() {
-        if (upcomingCache != null &&
-                Instant.now().isBefore(upcomingCachedAt.plus(UPCOMING_TTL_MINS, ChronoUnit.MINUTES))) {
-            log.info("✅ [CACHE HIT] Returning {} cached upcoming fixtures", upcomingCache.size());
-            return upcomingCache;
-        }
-        log.info("📡 [CACHE MISS] Fetching today's upcoming fixtures...");
+        log.info("📡 Fetching today's upcoming fixtures...");
         try {
             String today = java.time.LocalDate.now().toString();
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS
@@ -124,27 +68,15 @@ public class FootballApiService {
             JsonNode root = fetch(url);
             List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(root);
             log.info("✅ Today's upcoming fixtures fetched: {}", fixtures.size());
-            upcomingCache    = fixtures;
-            upcomingCachedAt = Instant.now();
             return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ getTodayUpcomingFixtures failed: {}", e.getMessage());
-            return upcomingCache != null ? upcomingCache : new ArrayList<>();
+            return new ArrayList<>();
         }
     }
 
-    /**
-     * Next 7 days of fixtures for a specific competition.
-     * Cached per competition ID for 30 minutes. Always returns a list, never throws.
-     */
     public List<UpcomingFixtureResponse> getUpcomingByLeague(int competitionId, int ignoredSeason) {
-        if (competitionId == (lastCompId != null ? lastCompId : -1) &&
-                compUpcomingCache != null &&
-                Instant.now().isBefore(compUpcomingCachedAt.plus(UPCOMING_TTL_MINS, ChronoUnit.MINUTES))) {
-            log.info("✅ [CACHE HIT] Returning {} cached upcoming for competition {}", compUpcomingCache.size(), competitionId);
-            return compUpcomingCache;
-        }
-        log.info("📡 [CACHE MISS] Fetching upcoming fixtures for competition: {}", competitionId);
+        log.info("📡 Fetching upcoming fixtures for competition: {}", competitionId);
         try {
             String today  = Instant.now().toString().substring(0, 10);
             String inWeek = Instant.now().plus(7, ChronoUnit.DAYS).toString().substring(0, 10);
@@ -153,27 +85,15 @@ public class FootballApiService {
             JsonNode root = fetch(url);
             List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(root);
             log.info("✅ Upcoming fixtures for competition {} fetched: {}", competitionId, fixtures.size());
-            lastCompId           = competitionId;
-            compUpcomingCache    = fixtures;
-            compUpcomingCachedAt = Instant.now();
             return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ getUpcomingByLeague({}) failed: {}", competitionId, e.getMessage());
-            return compUpcomingCache != null ? compUpcomingCache : new ArrayList<>();
+            return new ArrayList<>();
         }
     }
 
-    /**
-     * Today's finished games with real scores.
-     * Cached for 5 minutes. Always returns a list, never throws.
-     */
     public List<LiveGameResponse> getTodayFinishedGames() {
-        if (finishedCache != null &&
-                Instant.now().isBefore(finishedCachedAt.plus(FINISHED_TTL_MINS, ChronoUnit.MINUTES))) {
-            log.info("✅ [CACHE HIT] Returning {} cached finished games", finishedCache.size());
-            return finishedCache;
-        }
-        log.info("📡 [CACHE MISS] Fetching today's finished games...");
+        log.info("📡 Fetching today's finished games...");
         try {
             String today = java.time.LocalDate.now().toString();
             String url = BASE_URL + "/matches?competitions=" + DEFAULT_COMP_IDS
@@ -183,12 +103,10 @@ public class FootballApiService {
             JsonNode root = fetch(url);
             List<LiveGameResponse> games = parseLiveGames(root);
             log.info("✅ Finished games fetched: {}", games.size());
-            finishedCache    = games;
-            finishedCachedAt = Instant.now();
             return games;
         } catch (Exception e) {
             log.warn("⚠️ getTodayFinishedGames failed: {}", e.getMessage());
-            return finishedCache != null ? finishedCache : new ArrayList<>();
+            return new ArrayList<>();
         }
     }
 

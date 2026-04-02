@@ -45,29 +45,10 @@ public class FootballService {
     private static final String COMP_IDS = COMP_MAP.keySet()
             .stream().map(Object::toString).collect(Collectors.joining(","));
 
-    // ── Manual in-memory cache (safe with Mono — no @Cacheable needed) ────────
-    private volatile List<MatchDTO> fixturesCache    = null;
-    private volatile Instant        fixturesCachedAt = Instant.EPOCH;
-    private static final long       FIXTURES_TTL_MINS = 30;
-
-    private volatile List<MatchDTO> liveCache    = null;
-    private volatile Instant        liveCachedAt = Instant.EPOCH;
-    private static final long       LIVE_TTL_SECS = 60;
-
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * All fixtures (club + WC). Cached for 30 minutes.
-     * On error returns stale cache if available, otherwise empty list.
-     */
     public Mono<List<MatchDTO>> getAllFixtures() {
-        if (fixturesCache != null &&
-                Instant.now().isBefore(fixturesCachedAt.plus(FIXTURES_TTL_MINS, ChronoUnit.MINUTES))) {
-            log.info("✅ [CACHE HIT] Returning {} cached fixtures", fixturesCache.size());
-            return Mono.just(fixturesCache);
-        }
-
-        log.info("📡 [CACHE MISS] Fetching all fixtures (club + WC)...");
+        log.info("📡 Fetching all fixtures (club + WC)...");
         return Mono.zip(fetchClubFixtures(), fetchWorldCupFixtures())
                 .map(tuple -> {
                     List<MatchDTO> all = new ArrayList<>();
@@ -75,40 +56,22 @@ public class FootballService {
                     all.addAll(tuple.getT2());
                     log.info("✅ Total fixtures fetched: {} ({} club, {} WC)",
                             all.size(), tuple.getT1().size(), tuple.getT2().size());
-                    // Store in cache
-                    fixturesCache    = all;
-                    fixturesCachedAt = Instant.now();
                     return all;
                 })
                 .onErrorResume(e -> {
                     log.error("❌ getAllFixtures failed: {}", e.getMessage(), e);
-                    // Return stale cache if available, else empty list
-                    return Mono.just(fixturesCache != null ? fixturesCache : Collections.emptyList());
+                    return Mono.just(Collections.emptyList());
                 });
     }
 
-    /**
-     * Live / in-play fixtures only. Cached for 60 seconds.
-     * On error returns stale cache if available, otherwise empty list.
-     */
     public Mono<List<MatchDTO>> getLiveFixtures() {
-        if (liveCache != null &&
-                Instant.now().isBefore(liveCachedAt.plus(LIVE_TTL_SECS, ChronoUnit.SECONDS))) {
-            log.info("✅ [CACHE HIT] Returning {} cached live fixtures", liveCache.size());
-            return Mono.just(liveCache);
-        }
-
-        log.info("📡 [CACHE MISS] Fetching live fixtures...");
+        log.info("📡 Fetching live fixtures...");
         return fdGet("/matches?competitions=" + COMP_IDS + "&status=IN_PLAY,PAUSED")
                 .map(raw -> parseClubMatches(parseJson(raw), true))
-                .doOnSuccess(list -> {
-                    log.info("✅ Live fixtures fetched: {}", list.size());
-                    liveCache    = list;
-                    liveCachedAt = Instant.now();
-                })
+                .doOnSuccess(list -> log.info("✅ Live fixtures fetched: {}", list.size()))
                 .onErrorResume(e -> {
                     logHttpError("getLiveFixtures", e);
-                    return Mono.just(liveCache != null ? liveCache : Collections.emptyList());
+                    return Mono.just(Collections.emptyList());
                 });
     }
 
