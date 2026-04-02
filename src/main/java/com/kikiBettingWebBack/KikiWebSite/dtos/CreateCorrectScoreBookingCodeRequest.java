@@ -18,7 +18,6 @@ import java.util.UUID;
 @Data
 public class CreateCorrectScoreBookingCodeRequest {
 
-    @NotNull(message = "Expiry date is required")
     @Future(message = "Expiry date must be in the future")
     private LocalDateTime expiresAt;
 
