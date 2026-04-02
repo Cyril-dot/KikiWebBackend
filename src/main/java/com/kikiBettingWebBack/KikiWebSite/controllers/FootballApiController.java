@@ -4,6 +4,7 @@ import com.kikiBettingWebBack.KikiWebSite.dtos.LiveGameResponse;
 import com.kikiBettingWebBack.KikiWebSite.dtos.UpcomingFixtureResponse;
 import com.kikiBettingWebBack.KikiWebSite.services.FootballApiService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -11,9 +12,9 @@ import java.util.List;
 
 /**
  * Public endpoints to expose live scores and upcoming fixtures.
- *
  * Base path: /api/football
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/football")
 @RequiredArgsConstructor
@@ -21,87 +22,79 @@ public class FootballApiController {
 
     private final FootballApiService footballApiService;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // LIVE GAMES
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Live games ────────────────────────────────────────────────────────────
 
     /**
      * GET /api/football/live
-     *
      * Returns all in-play fixtures across every league.
-     * Uses one API request — safe within the 100/day free limit.
-     *
-     * Example response:
-     * [
-     *   {
-     *     "fixtureId": 867946,
-     *     "homeTeam": "Arsenal",
-     *     "awayTeam": "Chelsea",
-     *     "homeScore": 1,
-     *     "awayScore": 0,
-     *     "statusShort": "2H",
-     *     "statusLong": "Second Half",
-     *     "elapsed": 67,
-     *     "league": "Premier League",
-     *     "country": "England",
-     *     "round": "Regular Season - 30",
-     *     "kickoff": "2025-04-01T19:45:00+00:00"
-     *   }
-     * ]
+     * Always returns 200 — empty list if none or on error.
      */
     @GetMapping("/live")
     public ResponseEntity<List<LiveGameResponse>> getLiveGames() {
-        return ResponseEntity.ok(footballApiService.getLiveGames());
+        try {
+            List<LiveGameResponse> games = footballApiService.getLiveGames();
+            return ResponseEntity.ok(games != null ? games : List.of());
+        } catch (Exception e) {
+            log.warn("⚠️ /api/football/live failed, returning empty list: {}", e.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
     /**
-     * GET /api/football/live?leagues=39,140,135
-     *
-     * Returns live fixtures filtered to specific league IDs.
-     * Comma-separated league IDs (e.g. 39 = Premier League, 140 = La Liga).
-     * Still counts as ONE api-football request regardless of how many leagues.
+     * GET /api/football/live/leagues?leagues=2021,2014
+     * Returns live fixtures filtered to specific competition IDs.
+     * Always returns 200 — empty list if none or on error.
      */
     @GetMapping("/live/leagues")
     public ResponseEntity<List<LiveGameResponse>> getLiveGamesByLeagues(
             @RequestParam String leagues) {
-        return ResponseEntity.ok(footballApiService.getLiveGamesByLeagues(leagues));
+        try {
+            List<LiveGameResponse> games = footballApiService.getLiveGamesByLeagues(leagues);
+            return ResponseEntity.ok(games != null ? games : List.of());
+        } catch (Exception e) {
+            log.warn("⚠️ /api/football/live/leagues failed, returning empty list: {}", e.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // UPCOMING FIXTURES
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Upcoming fixtures ─────────────────────────────────────────────────────
 
     /**
      * GET /api/football/upcoming
-     *
-     * Returns today's not-yet-started fixtures for all default leagues
-     * configured in application.properties (football.api.default-leagues).
-     *
-     * NOTE: Makes one API call per league — keep the list short (5 leagues = 5 requests).
+     * Returns today's not-yet-started fixtures for all default leagues.
+     * Always returns 200 — empty list if none or on error.
      */
     @GetMapping("/upcoming")
     public ResponseEntity<List<UpcomingFixtureResponse>> getUpcomingGames() {
-        return ResponseEntity.ok(footballApiService.getTodayUpcomingFixtures());
+        try {
+            List<UpcomingFixtureResponse> fixtures = footballApiService.getTodayUpcomingFixtures();
+            return ResponseEntity.ok(fixtures != null ? fixtures : List.of());
+        } catch (Exception e) {
+            log.warn("⚠️ /api/football/upcoming failed, returning empty list: {}", e.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
     /**
      * GET /api/football/upcoming/{leagueId}?season=2024
-     *
-     * Returns today's upcoming fixtures for a specific league.
-     * Season defaults to the current football season if not supplied.
+     * Returns upcoming fixtures for a specific league.
+     * Always returns 200 — empty list if none or on error.
      */
     @GetMapping("/upcoming/{leagueId}")
     public ResponseEntity<List<UpcomingFixtureResponse>> getUpcomingByLeague(
             @PathVariable int leagueId,
             @RequestParam(required = false) Integer season) {
-
-        int resolvedSeason = (season != null) ? season : currentSeason();
-        return ResponseEntity.ok(footballApiService.getUpcomingByLeague(leagueId, resolvedSeason));
+        try {
+            int resolvedSeason = (season != null) ? season : currentSeason();
+            List<UpcomingFixtureResponse> fixtures = footballApiService.getUpcomingByLeague(leagueId, resolvedSeason);
+            return ResponseEntity.ok(fixtures != null ? fixtures : List.of());
+        } catch (Exception e) {
+            log.warn("⚠️ /api/football/upcoming/{} failed, returning empty list: {}", leagueId, e.getMessage());
+            return ResponseEntity.ok(List.of());
+        }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // HELPER
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Helper ────────────────────────────────────────────────────────────────
 
     private int currentSeason() {
         int month = java.time.LocalDate.now().getMonthValue();
