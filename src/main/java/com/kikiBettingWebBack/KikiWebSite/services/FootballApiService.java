@@ -9,28 +9,25 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class FootballApiService {
 
-    // ── BSD — live games ──────────────────────────────────────────
-    private static final String BSD_API_KEY  = "b72b9fd801323f6c22892218cd687fedf109ef91";
-    private static final String BSD_BASE_URL = "https://sports.bzzoiro.com";
-
-    // ── TheSportsDB — today + upcoming ───────────────────────────
-    private static final String TSDB_API_KEY  = "123";
-    private static final String TSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json/" + TSDB_API_KEY;
-
     private final ApiFootballClient apiFootballClient;
     private final ObjectMapper      objectMapper;
 
-    // ── Public API ────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+    // LIVE GAMES — BSD /api/live/
+    // ══════════════════════════════════════════════════════════════
 
     /**
-     * Live games — sourced from BSD /api/live/
+     * All active live games across every league.
      */
     public List<LiveGameResponse> getLiveGames() {
         log.info("📡 [FAS] Fetching live games from BSD...");
@@ -47,7 +44,40 @@ public class FootballApiService {
     }
 
     /**
-     * Today's upcoming fixtures — sourced from TheSportsDB
+     * Live games filtered to a comma-separated list of league names.
+     * e.g. "Premier League,La Liga"
+     * BSD doesn't support server-side league filtering on /api/live/
+     * so we fetch all live games and filter client-side by league name.
+     */
+    public List<LiveGameResponse> getLiveGamesByLeagues(String commaSeparatedLeagues) {
+        log.info("📡 [FAS] Fetching live games filtered by leagues: {}", commaSeparatedLeagues);
+        try {
+            Set<String> leagueFilter = Arrays.stream(commaSeparatedLeagues.split(","))
+                    .map(String::trim)
+                    .map(String::toLowerCase)
+                    .collect(Collectors.toSet());
+
+            List<LiveGameResponse> all = getLiveGames();
+
+            List<LiveGameResponse> filtered = all.stream()
+                    .filter(g -> g.getLeague() != null
+                            && leagueFilter.contains(g.getLeague().toLowerCase()))
+                    .toList();
+
+            log.info("✅ [FAS] Filtered live games: {} of {}", filtered.size(), all.size());
+            return filtered;
+        } catch (Exception e) {
+            log.warn("⚠️ [FAS] getLiveGamesByLeagues failed: {}", e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // TODAY + UPCOMING — TheSportsDB
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * Today's fixtures — sourced from TheSportsDB
      */
     public List<UpcomingFixtureResponse> getTodayUpcomingFixtures() {
         log.info("📡 [FAS] Fetching today's fixtures from TheSportsDB...");
@@ -55,7 +85,7 @@ public class FootballApiService {
             JsonNode root    = apiFootballClient.getTodayFixtures();
             JsonNode matches = root.path("matches");
             List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(matches);
-            log.info("✅ [FAS] Today upcoming fixtures: {}", fixtures.size());
+            log.info("✅ [FAS] Today fixtures: {}", fixtures.size());
             return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ [FAS] getTodayUpcomingFixtures failed: {}", e.getMessage());
@@ -64,19 +94,20 @@ public class FootballApiService {
     }
 
     /**
-     * Upcoming fixtures for a specific competition — TheSportsDB
+     * Upcoming fixtures for a specific competition — TheSportsDB.
+     * TheSportsDB free tier doesn't filter by competition ID,
+     * so we fetch the full 7-day window and return everything.
      */
     public List<UpcomingFixtureResponse> getUpcomingByLeague(int competitionId, int ignoredSeason) {
-        log.info("📡 [FAS] Fetching upcoming for competition: {} from TheSportsDB...", competitionId);
+        log.info("📡 [FAS] Fetching upcoming fixtures from TheSportsDB (competitionId={})...", competitionId);
         try {
-            // TheSportsDB: get next events for a league by its ID
             JsonNode root    = apiFootballClient.getFixturesByDateRange(
                     java.time.LocalDate.now().toString(),
                     java.time.LocalDate.now().plusDays(7).toString()
             );
             JsonNode matches = root.path("matches");
             List<UpcomingFixtureResponse> fixtures = parseUpcomingFixtures(matches);
-            log.info("✅ [FAS] Upcoming for competition {}: {}", competitionId, fixtures.size());
+            log.info("✅ [FAS] Upcoming fixtures: {}", fixtures.size());
             return fixtures;
         } catch (Exception e) {
             log.warn("⚠️ [FAS] getUpcomingByLeague({}) failed: {}", competitionId, e.getMessage());
@@ -85,7 +116,7 @@ public class FootballApiService {
     }
 
     /**
-     * Today's finished games — TheSportsDB (filter by FINISHED status)
+     * Today's finished games — TheSportsDB (filtered by FINISHED status)
      */
     public List<LiveGameResponse> getTodayFinishedGames() {
         log.info("📡 [FAS] Fetching today's finished games from TheSportsDB...");
@@ -93,7 +124,6 @@ public class FootballApiService {
             JsonNode root    = apiFootballClient.getTodayFixtures();
             JsonNode matches = root.path("matches");
 
-            // Filter to finished only
             List<LiveGameResponse> all      = parseLiveGames(matches);
             List<LiveGameResponse> finished = all.stream()
                     .filter(g -> "FINISHED".equals(g.getStatusShort()))
@@ -107,7 +137,9 @@ public class FootballApiService {
         }
     }
 
-    // ── Parsers ───────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+    // PARSERS
+    // ══════════════════════════════════════════════════════════════
 
     private List<LiveGameResponse> parseLiveGames(JsonNode matches) {
         List<LiveGameResponse> results = new ArrayList<>();
@@ -116,15 +148,15 @@ public class FootballApiService {
         for (JsonNode m : matches) {
             try {
                 LiveGameResponse dto = new LiveGameResponse();
-                String status  = m.path("status").asText("SCHEDULED");
+                String  status = m.path("status").asText("SCHEDULED");
                 boolean isLive = status.equals("IN_PLAY") || status.equals("PAUSED");
 
                 dto.setFixtureId(parseId(m.path("id").asText()));
                 dto.setKickoff(m.path("utcDate").asText());
                 dto.setHomeTeam(m.path("homeTeam").path("name").asText(""));
                 dto.setAwayTeam(m.path("awayTeam").path("name").asText(""));
-                dto.setHomeScore(scoreVal(m, "home", status));
-                dto.setAwayScore(scoreVal(m, "away", status));
+                dto.setHomeScore(scoreVal(m, "home"));
+                dto.setAwayScore(scoreVal(m, "away"));
                 dto.setStatusShort(status);
                 dto.setStatusLong(status);
                 dto.setElapsed(isLive ? m.path("minute").asInt(0) : null);
@@ -165,17 +197,19 @@ public class FootballApiService {
         return results;
     }
 
-    // ── Helpers ───────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+    // HELPERS
+    // ══════════════════════════════════════════════════════════════
 
-    private int scoreVal(JsonNode match, String side, String status) {
+    private int scoreVal(JsonNode match, String side) {
         JsonNode val = match.path("score").path("fullTime").path(side);
         if (!val.isNull() && val.isNumber()) return val.asInt();
         return 0;
     }
 
     /**
-     * IDs from the normalizers are prefixed e.g. "bsd-123" or "tsdb-456".
-     * Strip the prefix and parse as long, falling back to hashCode.
+     * IDs come prefixed from the normalizers e.g. "bsd-123" or "tsdb-456".
+     * Strip the prefix and parse as long, fall back to hashCode.
      */
     private long parseId(String rawId) {
         try {
