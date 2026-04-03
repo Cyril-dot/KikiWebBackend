@@ -9,21 +9,19 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.LocalDate;
-import java.util.LinkedHashSet;
-import java.util.Set;
 import java.util.function.Function;
 
 @Component
 @Slf4j
 public class ApiFootballClient {
 
-    // football-data.org
-    private static final String FD_API_KEY  = "38e63192b2dd49f2a9d541769c9ecea7";
-    private static final String FD_BASE_URL = "https://api.football-data.org/v4";
+    // ── BSD (Bzzoiro Sports Data) — LIVE GAMES ONLY ───────────────
+    private static final String BSD_API_KEY  = "b72b9fd801323f6c22892218cd687fedf109ef91";
+    private static final String BSD_BASE_URL = "https://sports.bzzoiro.com";
 
-    // api-sports.io (api-football)
-    private static final String AF_API_KEY  = "445e06863cad6598557f8d6e37b25e6b";
-    private static final String AF_BASE_URL = "https://v3.football.api-sports.io";
+    // ── TheSportsDB — TODAY + UPCOMING FIXTURES ───────────────────
+    private static final String TSDB_API_KEY  = "123";
+    private static final String TSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json/" + TSDB_API_KEY;
 
     private final ObjectMapper      objectMapper;
     private final WebClient.Builder webClientBuilder;
@@ -34,197 +32,280 @@ public class ApiFootballClient {
     }
 
     // ══════════════════════════════════════════════════════════════
-    // LIVE FIXTURES — NO league filter, fetch ALL live matches
+    // LIVE FIXTURES — BSD /api/live/
+    // Only returns matches currently IN PLAY with real-time scores
     // ══════════════════════════════════════════════════════════════
 
     public JsonNode getLiveFixtures() {
-        log.info("🔴 [LIVE] Fetching ALL live fixtures from all sources...");
-        ArrayNode merged = objectMapper.createArrayNode();
+        log.info("🔴 [LIVE] Fetching live fixtures from BSD...");
+        ArrayNode matches = objectMapper.createArrayNode();
 
-        // ── Source 1: football-data.org — no competitions filter ──
         try {
-            JsonNode fdResponse = executeFd(c -> c.get()
-                    .uri(u -> u.path("/matches")
-                            .queryParam("status", "IN_PLAY,PAUSED")
-                            // ✅ NO competitions filter — get ALL leagues
-                            .build())
+            JsonNode response = executeBsd(c -> c.get()
+                    .uri("/api/live/")
                     .retrieve()
                     .bodyToMono(String.class)
                     .block());
 
-            if (fdResponse != null && fdResponse.has("matches")) {
-                int count = 0;
-                for (JsonNode m : fdResponse.get("matches")) { merged.add(m); count++; }
-                log.info("✅ [FD][LIVE] {} matches fetched", count);
+            JsonNode results = response.path("results");
+            if (!results.isArray()) {
+                log.warn("⚠️ [BSD][LIVE] No results array in response");
+                return wrap(matches);
             }
-        } catch (Exception e) {
-            log.error("❌ [FD][LIVE] Failed: {}", e.getMessage());
-        }
 
-        // ── Source 2: api-sports — fetch ALL live matches ─────────
-        if (isApiSportsEnabled()) {
-            try {
-                JsonNode afResponse = executeAf(c -> c.get()
-                        .uri(u -> u.path("/fixtures")
-                                .queryParam("live", "all")
-                                // ✅ "all" already means all leagues
-                                .build())
-                        .retrieve()
-                        .bodyToMono(String.class)
-                        .block());
-
-                if (afResponse != null && afResponse.has("response")) {
-                    int count = 0;
-                    for (JsonNode f : afResponse.get("response")) {
-                        merged.add(normaliseAfFixture(f));
-                        count++;
-                    }
-                    log.info("✅ [AF][LIVE] {} matches fetched", count);
+            for (JsonNode event : results) {
+                // Only include truly active matches
+                String status = event.path("status").asText("");
+                if (isActiveLiveStatus(status)) {
+                    matches.add(normaliseBsdLive(event));
                 }
-            } catch (Exception e) {
-                log.error("❌ [AF][LIVE] Failed: {}", e.getMessage());
             }
+
+            log.info("✅ [BSD][LIVE] {} active live matches", matches.size());
+
+        } catch (Exception e) {
+            log.error("❌ [BSD][LIVE] Failed: {}", e.getMessage());
         }
 
-        ArrayNode deduped = deduplicate(merged);
-        log.info("📦 [LIVE] Total after dedup: {}", deduped.size());
-        return wrap(deduped);
+        return wrap(matches);
     }
 
     // ══════════════════════════════════════════════════════════════
-    // TODAY'S FIXTURES — ALL leagues
+    // TODAY'S FIXTURES — TheSportsDB eventsday.php
     // ══════════════════════════════════════════════════════════════
 
     public JsonNode getTodayFixtures() {
         String today = LocalDate.now().toString();
-        log.info("📅 [TODAY] Fetching ALL fixtures for {}", today);
-        return getFixturesByDateRange(today, today);
+        log.info("📅 [TODAY] Fetching today's fixtures from TheSportsDB for {}...", today);
+        return getFixturesByDate(today);
     }
 
     // ══════════════════════════════════════════════════════════════
-    // UPCOMING FIXTURES — ALL leagues, next 7 days
+    // UPCOMING FIXTURES — TheSportsDB eventsday.php next 7 days
     // ══════════════════════════════════════════════════════════════
 
     public JsonNode getUpcomingFixtures() {
-        String from = LocalDate.now().plusDays(1).toString();
-        String to   = LocalDate.now().plusDays(7).toString();
-        log.info("📅 [UPCOMING] Fetching ALL fixtures {} → {}", from, to);
-        return getFixturesByDateRange(from, to);
+        log.info("📅 [UPCOMING] Fetching upcoming fixtures from TheSportsDB...");
+        ArrayNode merged = objectMapper.createArrayNode();
+
+        for (int i = 1; i <= 7; i++) {
+            String date = LocalDate.now().plusDays(i).toString();
+            try {
+                JsonNode dayResult  = getFixturesByDate(date);
+                JsonNode dayMatches = dayResult.path("matches");
+                if (dayMatches.isArray()) {
+                    for (JsonNode m : dayMatches) merged.add(m);
+                }
+                Thread.sleep(200);
+            } catch (Exception e) {
+                log.warn("⚠️ [TSDB][UPCOMING] Failed for date {}: {}", date, e.getMessage());
+            }
+        }
+
+        log.info("✅ [TSDB][UPCOMING] {} total upcoming fixtures", merged.size());
+        return wrap(merged);
     }
 
     // ══════════════════════════════════════════════════════════════
-    // DATE RANGE — ALL leagues, no filter
+    // DATE RANGE — TheSportsDB
     // ══════════════════════════════════════════════════════════════
 
     public JsonNode getFixturesByDateRange(String dateFrom, String dateTo) {
+        log.info("📅 [TSDB] Fetching fixtures {} → {}", dateFrom, dateTo);
         ArrayNode merged = objectMapper.createArrayNode();
 
-        // ── Source 1: football-data.org — NO competitions filter ──
+        LocalDate from = LocalDate.parse(dateFrom);
+        LocalDate to   = LocalDate.parse(dateTo);
+
+        for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+            try {
+                JsonNode dayResult  = getFixturesByDate(date.toString());
+                JsonNode dayMatches = dayResult.path("matches");
+                if (dayMatches.isArray()) {
+                    for (JsonNode m : dayMatches) merged.add(m);
+                }
+                Thread.sleep(200);
+            } catch (Exception e) {
+                log.warn("⚠️ [TSDB] Failed for date {}: {}", date, e.getMessage());
+            }
+        }
+
+        return wrap(merged);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SINGLE DATE — TheSportsDB eventsday.php
+    // ══════════════════════════════════════════════════════════════
+
+    private JsonNode getFixturesByDate(String date) {
         try {
-            JsonNode fdResponse = executeFd(c -> c.get()
-                    .uri(u -> u.path("/matches")
-                            .queryParam("dateFrom", dateFrom)
-                            .queryParam("dateTo",   dateTo)
-                            // ✅ NO competitions filter — ALL leagues
+            JsonNode response = executeTsdb(c -> c.get()
+                    .uri(u -> u.path("/eventsday.php")
+                            .queryParam("d", date)
+                            .queryParam("s", "Soccer")
                             .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block());
 
-            if (fdResponse != null && fdResponse.has("matches")) {
-                int count = 0;
-                for (JsonNode m : fdResponse.get("matches")) { merged.add(m); count++; }
-                log.info("✅ [FD] {} matches fetched ({} → {})", count, dateFrom, dateTo);
-            }
-        } catch (Exception e) {
-            log.error("❌ [FD] Failed to fetch range {}-{}: {}", dateFrom, dateTo, e.getMessage());
-        }
+            ArrayNode matches = objectMapper.createArrayNode();
+            JsonNode events   = response.path("events");
 
-        // ── Source 2: api-sports — one call per day, all leagues ──
-        if (isApiSportsEnabled()) {
-            try {
-                LocalDate from = LocalDate.parse(dateFrom);
-                LocalDate to   = LocalDate.parse(dateTo);
-                for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
-                    final String dateStr = date.toString();
-                    try {
-                        JsonNode afResponse = executeAf(c -> c.get()
-                                .uri(u -> u.path("/fixtures")
-                                        .queryParam("date", dateStr)
-                                        // ✅ NO league filter — ALL leagues
-                                        .build())
-                                .retrieve()
-                                .bodyToMono(String.class)
-                                .block());
-
-                        if (afResponse != null && afResponse.has("response")) {
-                            int count = 0;
-                            for (JsonNode f : afResponse.get("response")) {
-                                merged.add(normaliseAfFixture(f));
-                                count++;
-                            }
-                            log.info("✅ [AF] {} matches fetched for {}", count, dateStr);
-                        }
-                        Thread.sleep(250);
-                    } catch (Exception inner) {
-                        log.error("❌ [AF] Failed for date {}: {}", dateStr, inner.getMessage());
-                    }
+            if (events.isArray()) {
+                for (JsonNode event : events) {
+                    matches.add(normaliseTsdbEvent(event));
                 }
-            } catch (Exception e) {
-                log.error("❌ [AF] Date range loop failed: {}", e.getMessage());
+                log.info("✅ [TSDB] {} events fetched for {}", matches.size(), date);
+            } else {
+                log.debug("ℹ️ [TSDB] No events for {}", date);
             }
-        }
 
-        ArrayNode deduped = deduplicate(merged);
-        log.info("📦 Total after dedup ({} → {}): {}", dateFrom, dateTo, deduped.size());
-        return wrap(deduped);
+            return wrap(matches);
+
+        } catch (Exception e) {
+            log.error("❌ [TSDB] Failed for date {}: {}", date, e.getMessage());
+            return wrap(objectMapper.createArrayNode());
+        }
     }
 
     // ══════════════════════════════════════════════════════════════
-    // NORMALISER — api-sports → football-data.org shape
+    // NORMALISER — BSD /api/live/ → shared DTO shape
+    //
+    // BSD live fields (from docs):
+    //   id
+    //   home_team          → string (team name)
+    //   away_team          → string (team name)
+    //   home_team_obj      → { id, api_id, name, short_name, country }
+    //   away_team_obj      → { id, api_id, name, short_name, country }
+    //   home_score         → integer
+    //   away_score         → integer
+    //   current_minute     → integer
+    //   period             → "1T" | "HT" | "2T" | "FT"
+    //   status             → "inprogress" | "1st_half" | "halftime" | "2nd_half"
+    //   event_date         → ISO 8601 datetime
+    //   league             → { id, api_id, name, country, season_id }
+    //   incidents          → [ { type, minute, player_name, is_home } ]
+    //   live_stats         → { home: { ball_possession, total_shots, ... },
+    //                          away: { ... } }
     // ══════════════════════════════════════════════════════════════
 
-    private JsonNode normaliseAfFixture(JsonNode af) {
+    private JsonNode normaliseBsdLive(JsonNode bsd) {
         var out = objectMapper.createObjectNode();
-        String fixtureId = af.path("fixture").path("id").asText();
-        out.put("id",     "af-" + fixtureId);
-        out.put("source", "api-sports");
 
-        String date = af.path("fixture").path("date").asText();
-        if (date.length() >= 19) out.put("utcDate", date.substring(0, 19));
+        out.put("id",      "bsd-" + bsd.path("id").asText());
+        out.put("source",  "bsd");
+        out.put("utcDate", bsd.path("event_date").asText());           // ✅ event_date
+        out.put("status",  "IN_PLAY");
+        out.put("minute",  bsd.path("current_minute").asInt(0));       // ✅ current_minute
+        out.put("period",  bsd.path("period").asText(""));
 
-        String shortStatus = af.path("fixture").path("status").path("short").asText();
-        out.put("status",  mapAfStatus(shortStatus));
-        out.put("minute",  af.path("fixture").path("status").path("elapsed").asInt(0));
+        // ── Home team ─────────────────────────────────────────────
+        var home    = objectMapper.createObjectNode();
+        JsonNode homeObj  = bsd.path("home_team_obj");
+        int      homeApiId = homeObj.path("api_id").asInt(0);
+        home.put("id",    homeObj.path("id").asInt(0));
+        home.put("apiId", homeApiId);
+        home.put("name",  bsd.path("home_team").asText());             // ✅ string name
+        home.put("crest", homeApiId > 0
+                ? BSD_BASE_URL + "/img/team/" + homeApiId + "/"
+                : "");
+        out.set("homeTeam", home);
+
+        // ── Away team ─────────────────────────────────────────────
+        var away    = objectMapper.createObjectNode();
+        JsonNode awayObj  = bsd.path("away_team_obj");
+        int      awayApiId = awayObj.path("api_id").asInt(0);
+        away.put("id",    awayObj.path("id").asInt(0));
+        away.put("apiId", awayApiId);
+        away.put("name",  bsd.path("away_team").asText());             // ✅ string name
+        away.put("crest", awayApiId > 0
+                ? BSD_BASE_URL + "/img/team/" + awayApiId + "/"
+                : "");
+        out.set("awayTeam", away);
+
+        // ── Competition ───────────────────────────────────────────
+        var      comp        = objectMapper.createObjectNode();
+        JsonNode league      = bsd.path("league");
+        int      leagueApiId = league.path("api_id").asInt(0);
+        comp.put("id",     league.path("id").asInt(0));
+        comp.put("apiId",  leagueApiId);
+        comp.put("name",   league.path("name").asText(""));
+        comp.put("emblem", leagueApiId > 0
+                ? BSD_BASE_URL + "/img/league/" + leagueApiId + "/"
+                : "");
+        out.set("competition", comp);
+
+        // ── Area ──────────────────────────────────────────────────
+        var area = objectMapper.createObjectNode();
+        area.put("name", league.path("country").asText(""));
+        out.set("area", area);
+
+        // ── Score — BSD: home_score / away_score are plain integers
+        var score    = objectMapper.createObjectNode();
+        var fullTime = objectMapper.createObjectNode();
+        JsonNode hs  = bsd.path("home_score");
+        JsonNode as_ = bsd.path("away_score");
+        fullTime.put("home", hs.isNull() || hs.isMissingNode() ? 0 : hs.asInt());
+        fullTime.put("away", as_.isNull() || as_.isMissingNode() ? 0 : as_.asInt());
+        score.set("fullTime", fullTime);
+        out.set("score", score);
+
+        // ── Incidents (goals, cards, subs) ────────────────────────
+        JsonNode incidents = bsd.path("incidents");
+        if (incidents.isArray()) out.set("incidents", incidents);
+
+        // ── Live stats ────────────────────────────────────────────
+        JsonNode liveStats = bsd.path("live_stats");
+        if (!liveStats.isMissingNode() && !liveStats.isNull()) {
+            out.set("liveStats", liveStats);
+        }
+
+        return out;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // NORMALISER — TheSportsDB event → shared DTO shape
+    // ══════════════════════════════════════════════════════════════
+
+    private JsonNode normaliseTsdbEvent(JsonNode tsdb) {
+        var out = objectMapper.createObjectNode();
+
+        out.put("id",      "tsdb-" + tsdb.path("idEvent").asText());
+        out.put("source",  "thesportsdb");
+
+        String date = tsdb.path("dateEvent").asText("");
+        String time = tsdb.path("strTime").asText("00:00:00");
+        out.put("utcDate", date + "T" + time);
+        out.put("status",  mapTsdbStatus(tsdb.path("strStatus").asText()));
 
         var home = objectMapper.createObjectNode();
-        home.put("id",    af.path("teams").path("home").path("id").asInt(0));
-        home.put("name",  af.path("teams").path("home").path("name").asText());
-        home.put("crest", af.path("teams").path("home").path("logo").asText());
+        home.put("id",    tsdb.path("idHomeTeam").asText(""));
+        home.put("name",  tsdb.path("strHomeTeam").asText());
+        home.put("crest", tsdb.path("strHomeTeamBadge").asText(""));
         out.set("homeTeam", home);
 
         var away = objectMapper.createObjectNode();
-        away.put("id",    af.path("teams").path("away").path("id").asInt(0));
-        away.put("name",  af.path("teams").path("away").path("name").asText());
-        away.put("crest", af.path("teams").path("away").path("logo").asText());
+        away.put("id",    tsdb.path("idAwayTeam").asText(""));
+        away.put("name",  tsdb.path("strAwayTeam").asText());
+        away.put("crest", tsdb.path("strAwayTeamBadge").asText(""));
         out.set("awayTeam", away);
 
         var comp = objectMapper.createObjectNode();
-        comp.put("id",     af.path("league").path("id").asInt(0));
-        comp.put("name",   af.path("league").path("name").asText());
-        comp.put("emblem", af.path("league").path("logo").asText());
+        comp.put("id",   tsdb.path("idLeague").asText(""));
+        comp.put("name", tsdb.path("strLeague").asText());
         out.set("competition", comp);
 
         var area = objectMapper.createObjectNode();
-        area.put("name", af.path("league").path("country").asText());
+        area.put("name", tsdb.path("strCountry").asText());
         out.set("area", area);
 
         var score    = objectMapper.createObjectNode();
         var fullTime = objectMapper.createObjectNode();
-        JsonNode goals = af.path("goals");
-        if (!goals.path("home").isNull() && !goals.path("home").isMissingNode()) {
-            fullTime.put("home", goals.path("home").asInt());
-            fullTime.put("away", goals.path("away").asInt());
+        JsonNode homeScore = tsdb.path("intHomeScore");
+        JsonNode awayScore = tsdb.path("intAwayScore");
+        if (!homeScore.isNull() && !homeScore.isMissingNode() && !homeScore.asText().isBlank()) {
+            fullTime.put("home", homeScore.asInt());
+            fullTime.put("away", awayScore.asInt());
         } else {
             fullTime.putNull("home");
             fullTime.putNull("away");
@@ -235,112 +316,86 @@ public class ApiFootballClient {
         return out;
     }
 
-    private String mapAfStatus(String s) {
-        return switch (s) {
-            case "NS", "TBD"           -> "SCHEDULED";
-            case "1H", "2H", "ET", "P" -> "IN_PLAY";
-            case "HT"                  -> "PAUSED";
-            case "FT", "AET", "PEN"    -> "FINISHED";
-            case "SUSP", "INT"         -> "SUSPENDED";
-            case "PST"                 -> "POSTPONED";
-            case "CANC", "ABD"         -> "CANCELLED";
-            default                    -> "SCHEDULED";
+    // ══════════════════════════════════════════════════════════════
+    // STATUS HELPERS
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * BSD status values (from docs):
+     * notstarted | inprogress | 1st_half | halftime | 2nd_half | finished | postponed | cancelled
+     */
+    private boolean isActiveLiveStatus(String status) {
+        return switch (status.toLowerCase()) {
+            case "inprogress", "1st_half", "halftime", "2nd_half" -> true;
+            default -> false;
         };
     }
 
-    // ══════════════════════════════════════════════════════════════
-    // DEDUPLICATION
-    // ══════════════════════════════════════════════════════════════
-
-    private ArrayNode deduplicate(ArrayNode matches) {
-        ArrayNode result = objectMapper.createArrayNode();
-        Set<String> seen = new LinkedHashSet<>();
-        for (JsonNode m : matches) {
-            String home = norm(m.path("homeTeam").path("name").asText());
-            String away = norm(m.path("awayTeam").path("name").asText());
-            String date = m.path("utcDate").asText();
-            if (date.length() >= 10) date = date.substring(0, 10);
-            String key = home + "|" + away + "|" + date;
-            if (seen.add(key)) result.add(m);
-            else log.debug("🔁 Duplicate skipped: {} vs {} on {}", home, away, date);
-        }
-        return result;
-    }
-
-    private String norm(String name) {
-        return name.toLowerCase()
-                .replace(" fc","").replace("fc ","")
-                .replace(" afc","").replace("afc ","")
-                .replace(" cf","").replace(" sc","")
-                .replace(" united","").replace(" city","")
-                .replace("manchester ","man ")
-                .replaceAll("[^a-z0-9]","").trim();
+    private String mapTsdbStatus(String s) {
+        if (s == null) return "SCHEDULED";
+        return switch (s.toLowerCase()) {
+            case "match finished", "ft", "aet" -> "FINISHED";
+            case "in progress", "live",
+                 "1h", "2h", "ht"              -> "IN_PLAY";
+            case "postponed"                    -> "POSTPONED";
+            case "cancelled"                    -> "CANCELLED";
+            default                             -> "SCHEDULED";
+        };
     }
 
     // ══════════════════════════════════════════════════════════════
     // HTTP CLIENTS
     // ══════════════════════════════════════════════════════════════
 
-    private WebClient fdClient() {
+    private WebClient bsdClient() {
         return webClientBuilder.clone()
-                .baseUrl(FD_BASE_URL)
-                .defaultHeader("X-Auth-Token", FD_API_KEY)
+                .baseUrl(BSD_BASE_URL)
+                .defaultHeader("Authorization", "Token " + BSD_API_KEY)
                 .build();
     }
 
-    private WebClient afClient() {
+    private WebClient tsdbClient() {
         return webClientBuilder.clone()
-                .baseUrl(AF_BASE_URL)
-                .defaultHeader("x-apisports-key", AF_API_KEY)
+                .baseUrl(TSDB_BASE_URL)
                 .build();
     }
 
-    private JsonNode executeFd(Function<WebClient, String> call) {
+    private JsonNode executeBsd(Function<WebClient, String> call) {
         try {
-            String response = call.apply(fdClient());
+            String response = call.apply(bsdClient());
             if (response == null || response.isBlank()) return objectMapper.createObjectNode();
-            JsonNode root = objectMapper.readTree(response);
-            // Log if error message present
-            if (root.has("message")) log.warn("⚠️ [FD] API message: {}", root.get("message").asText());
-            return root;
+            return objectMapper.readTree(response);
         } catch (WebClientResponseException e) {
             int status = e.getStatusCode().value();
-            if (status == 429)                       log.warn("⚠️ [FD] Rate limit hit (429)");
-            else if (status == 401 || status == 403) log.error("❌ [FD] Auth error {} — check FD_API_KEY", status);
-            else log.error("❌ [FD] HTTP {}: {}", status, e.getResponseBodyAsString().substring(0, Math.min(200, e.getResponseBodyAsString().length())));
+            if (status == 401 || status == 403) log.error("❌ [BSD] Auth error {} — check BSD_API_KEY", status);
+            else if (status == 429)             log.warn("⚠️ [BSD] Rate limit hit");
+            else                                log.error("❌ [BSD] HTTP {}: {}", status, e.getMessage());
             return objectMapper.createObjectNode();
         } catch (Exception e) {
-            log.error("❌ [FD] Unexpected: {}", e.getMessage());
+            log.error("❌ [BSD] Unexpected: {}", e.getMessage());
             return objectMapper.createObjectNode();
         }
     }
 
-    private JsonNode executeAf(Function<WebClient, String> call) {
+    private JsonNode executeTsdb(Function<WebClient, String> call) {
         try {
-            String response = call.apply(afClient());
+            String response = call.apply(tsdbClient());
             if (response == null || response.isBlank()) return objectMapper.createObjectNode();
-            JsonNode root = objectMapper.readTree(response);
-            // Log api-sports errors array
-            if (root.has("errors") && !root.get("errors").isEmpty()) {
-                log.warn("⚠️ [AF] API errors: {}", root.get("errors").toString().substring(0, Math.min(200, root.get("errors").toString().length())));
-            }
-            return root;
+            return objectMapper.readTree(response);
         } catch (WebClientResponseException e) {
             int status = e.getStatusCode().value();
-            if (status == 429)                       log.warn("⚠️ [AF] Rate limit (429) — 10 req/min free tier");
-            else if (status == 401 || status == 403) log.error("❌ [AF] Auth error {} — check AF_API_KEY", status);
-            else log.error("❌ [AF] HTTP {}: {}", status, e.getMessage());
+            if (status == 429) log.warn("⚠️ [TSDB] Rate limit hit");
+            else               log.error("❌ [TSDB] HTTP {}: {}", status, e.getMessage());
             return objectMapper.createObjectNode();
         } catch (Exception e) {
-            log.error("❌ [AF] Unexpected: {}", e.getMessage());
+            log.error("❌ [TSDB] Unexpected: {}", e.getMessage());
             return objectMapper.createObjectNode();
         }
     }
 
-    private boolean isApiSportsEnabled() {
-        return AF_API_KEY != null && !AF_API_KEY.isBlank()
-                && !AF_API_KEY.equals("YOUR_API_SPORTS_KEY_HERE");
-    }
+    // ══════════════════════════════════════════════════════════════
+    // WRAP HELPER
+    // ══════════════════════════════════════════════════════════════
 
     private JsonNode wrap(ArrayNode matches) {
         var wrapper = objectMapper.createObjectNode();
