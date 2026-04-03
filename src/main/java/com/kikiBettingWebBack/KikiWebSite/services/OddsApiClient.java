@@ -7,27 +7,36 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiFunction;
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.function.Function;
 
+/**
+ * Fetches odds from BSD (Bzzoiro Sports Data) /api/events/
+ *
+ * BSD returns odds directly inside each event object:
+ *   odds_home    → home win decimal odds
+ *   odds_draw    → draw decimal odds
+ *   odds_away    → away win decimal odds
+ *   odds_over_15 → over 1.5 goals
+ *   odds_over_25 → over 2.5 goals
+ *   odds_over_35 → over 3.5 goals
+ *   odds_btts    → both teams to score
+ *
+ * This class replaces the old The Odds API integration.
+ * It keeps the same public interface (getAllSoccerOdds, getOddsForSport)
+ * so all callers (MatchMapper, LiveGamesService, etc.) work unchanged.
+ */
 @Component
 @Slf4j
 public class OddsApiClient {
 
-    // ══════════════════════════════════════════════════════════════
-    // HARDCODED API KEYS — replace with your real keys
-    // Key2 is optional — leave as empty string if you only have one
-    // ══════════════════════════════════════════════════════════════
-
-    private static final String ODDS_API_KEY_1   = "7282ca3ef0fc2e751b1946253754bebd";
-    private static final String ODDS_API_KEY_2   = "d98835812b3540078d9263650e431cd6";   // optional second key
-    private static final String ODDS_API_BASE    = "https://api.the-odds-api.com/v4";
+    private static final String BSD_API_KEY  = "b72b9fd801323f6c22892218cd687fedf109ef91";
+    private static final String BSD_BASE_URL = "https://sports.bzzoiro.com";
 
     private final ObjectMapper      objectMapper;
     private final WebClient.Builder webClientBuilder;
-    private final AtomicInteger     keyIndex = new AtomicInteger(0);
 
     public OddsApiClient(ObjectMapper objectMapper, WebClient.Builder webClientBuilder) {
         this.objectMapper     = objectMapper;
@@ -35,128 +44,150 @@ public class OddsApiClient {
     }
 
     // ══════════════════════════════════════════════════════════════
-    // PUBLIC METHODS
+    // PUBLIC API — same signature as before so callers don't change
     // ══════════════════════════════════════════════════════════════
 
     /**
-     * Fetch h2h + totals odds for a given sport key and region.
-     * sportKey examples: "soccer_epl", "soccer_spain_la_liga",
-     *                    "soccer_italy_serie_a", "soccer_germany_bundesliga",
-     *                    "soccer_france_ligue_one", "soccer_uefa_champs_league"
+     * Fetch odds for all soccer events in a date window (today + 7 days).
+     * Returns a single-entry map keyed "bsd_soccer" → array of BSD events.
+     * The region param is ignored (BSD is region-agnostic).
      */
-    public JsonNode getOddsForSport(String sportKey, String region) {
-        log.info("📊 [ODDS] Fetching odds — sport={} region={}", sportKey, region);
-        return executeWithFallback((client, key) -> client.get()
-                .uri(u -> u.path("/sports/{sport}/odds")
-                        .queryParam("apiKey",     key)
-                        .queryParam("regions",    region)
-                        .queryParam("markets",    "h2h,totals")
-                        .queryParam("oddsFormat", "decimal")
-                        .build(sportKey))
-                .retrieve()
-                .bodyToMono(String.class)
-                .block());
-    }
+    public Map<String, JsonNode> getAllSoccerOdds(String ignoredRegion) {
+        log.info("📊 [ODDS/BSD] Fetching all soccer odds from BSD events...");
+        Map<String, JsonNode> result = new LinkedHashMap<>();
 
-    /**
-     * Fetch odds for all major soccer leagues at once.
-     * Returns a map: sportKey → JsonNode (array of events with odds)
-     */
-    public java.util.Map<String, JsonNode> getAllSoccerOdds(String region) {
-        List<String> soccerKeys = List.of(
-                "soccer_epl",
-                "soccer_spain_la_liga",
-                "soccer_italy_serie_a",
-                "soccer_germany_bundesliga",
-                "soccer_france_ligue_one",
-                "soccer_uefa_champs_league",
-                "soccer_uefa_europa_league",
-                "soccer_africa_cup_of_nations"
-        );
+        try {
+            String today  = LocalDate.now().toString();
+            String inWeek = LocalDate.now().plusDays(7).toString();
 
-        java.util.Map<String, JsonNode> result = new java.util.LinkedHashMap<>();
-        for (String sportKey : soccerKeys) {
-            try {
-                JsonNode odds = getOddsForSport(sportKey, region);
-                if (odds != null && odds.isArray() && odds.size() > 0) {
-                    result.put(sportKey, odds);
-                    log.info("✅ [ODDS] {} — {} events", sportKey, odds.size());
+            JsonNode events = fetchEvents(today, inWeek);
+
+            if (events != null && events.isArray() && events.size() > 0) {
+                // Filter to only events that actually have odds
+                var withOdds = objectMapper.createArrayNode();
+                for (JsonNode e : events) {
+                    if (hasOdds(e)) withOdds.add(e);
                 }
-                Thread.sleep(300); // avoid hitting rate limit
-            } catch (Exception e) {
-                log.error("❌ [ODDS] Failed for {}: {}", sportKey, e.getMessage());
+                result.put("bsd_soccer", withOdds);
+                log.info("✅ [ODDS/BSD] {} events fetched, {} have odds", events.size(), withOdds.size());
+            } else {
+                log.info("ℹ️ [ODDS/BSD] No events returned from BSD");
             }
+
+        } catch (Exception e) {
+            log.error("❌ [ODDS/BSD] getAllSoccerOdds failed: {}", e.getMessage());
         }
+
         return result;
     }
 
+    /**
+     * Fetch odds for a specific sport key (legacy signature kept for compatibility).
+     * BSD doesn't filter by sport key, so we return all soccer events.
+     * The sportKey param is ignored.
+     */
+    public JsonNode getOddsForSport(String ignoredSportKey, String ignoredRegion) {
+        log.info("📊 [ODDS/BSD] getOddsForSport called — fetching from BSD...");
+        Map<String, JsonNode> all = getAllSoccerOdds(ignoredRegion);
+        return all.getOrDefault("bsd_soccer", objectMapper.createArrayNode());
+    }
+
     // ══════════════════════════════════════════════════════════════
-    // CORE EXECUTOR WITH KEY FALLBACK
+    // BSD EVENTS FETCHER — handles pagination
     // ══════════════════════════════════════════════════════════════
 
-    private JsonNode executeWithFallback(BiFunction<WebClient, String, String> call) {
-        List<String> keys = getActiveKeys();
-        if (keys.isEmpty()) {
-            log.warn("⚠️ [ODDS] No valid API keys configured — returning empty");
-            return objectMapper.createArrayNode();
+    private JsonNode fetchEvents(String dateFrom, String dateTo) {
+        var allResults = objectMapper.createArrayNode();
+        String nextUrl = null;
+        int page = 1;
+
+        // First page
+        try {
+            JsonNode response = executeBsd(c -> c.get()
+                    .uri(u -> u.path("/api/events/")
+                            .queryParam("date_from", dateFrom)
+                            .queryParam("date_to",   dateTo)
+                            .build())
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block());
+
+            JsonNode results = response.path("results");
+            if (results.isArray()) {
+                for (JsonNode r : results) allResults.add(r);
+            }
+            nextUrl = response.path("next").isNull() ? null : response.path("next").asText(null);
+            log.debug("📄 [ODDS/BSD] Page {} — {} events", page, results.size());
+
+        } catch (Exception e) {
+            log.error("❌ [ODDS/BSD] Failed fetching page {}: {}", page, e.getMessage());
+            return allResults;
         }
 
-        int start   = keyIndex.getAndUpdate(i -> (i + 1) % keys.size());
-        List<String> ordered = new ArrayList<>();
-        for (int i = 0; i < keys.size(); i++) {
-            ordered.add(keys.get((start + i) % keys.size()));
-        }
-
-        for (int i = 0; i < ordered.size(); i++) {
-            String key   = ordered.get(i);
-            String label = "odds-key" + (i + 1);
+        // Additional pages (pagination)
+        while (nextUrl != null && !nextUrl.isBlank()) {
+            page++;
+            final String url = nextUrl;
             try {
-                log.debug("🔑 [ODDS] Trying {}", label);
-                String response = call.apply(client(), key);
-                if (response == null || response.isBlank() || response.equals("{}")) {
-                    log.warn("⚠️ [ODDS] {} returned empty, trying next...", label);
-                    continue;
+                Thread.sleep(150); // be polite
+                JsonNode response = executeBsd(c -> c.get()
+                        .uri(url)
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block());
+
+                JsonNode results = response.path("results");
+                if (results.isArray()) {
+                    for (JsonNode r : results) allResults.add(r);
                 }
-                JsonNode node = objectMapper.readTree(response);
-                log.debug("✅ [ODDS] {} succeeded", label);
-                return node;
-            } catch (WebClientResponseException e) {
-                int status = e.getStatusCode().value();
-                if (status == 401 || status == 403) {
-                    log.warn("⚠️ [ODDS] {} — invalid key (HTTP {}), trying next...", label, status);
-                } else if (status == 429) {
-                    log.warn("⚠️ [ODDS] {} — quota exhausted (HTTP 429), trying next...", label);
-                } else {
-                    log.error("❌ [ODDS] {} — HTTP {}: {}", label, status, e.getMessage());
-                }
-                if (i == ordered.size() - 1) log.error("🚨 [ODDS] All API keys exhausted!");
+                nextUrl = response.path("next").isNull() ? null : response.path("next").asText(null);
+                log.debug("📄 [ODDS/BSD] Page {} — {} events", page, results.size());
+
             } catch (Exception e) {
-                log.warn("⚠️ [ODDS] {} threw: {}", label, e.getMessage());
-                if (i == ordered.size() - 1) log.error("🚨 [ODDS] All API keys exhausted!");
+                log.error("❌ [ODDS/BSD] Failed fetching page {}: {}", page, e.getMessage());
+                break;
             }
         }
-        return objectMapper.createArrayNode();
+
+        log.info("✅ [ODDS/BSD] Total events fetched across {} page(s): {}", page, allResults.size());
+        return allResults;
     }
 
     // ══════════════════════════════════════════════════════════════
     // HELPERS
     // ══════════════════════════════════════════════════════════════
 
-    private List<String> getActiveKeys() {
-        List<String> active = new ArrayList<>();
-        if (ODDS_API_KEY_1 != null && !ODDS_API_KEY_1.isBlank()
-                && !ODDS_API_KEY_1.equals("YOUR_ODDS_API_KEY_1_HERE")) {
-            active.add(ODDS_API_KEY_1);
-        }
-        if (ODDS_API_KEY_2 != null && !ODDS_API_KEY_2.isBlank()) {
-            active.add(ODDS_API_KEY_2);
-        }
-        return active;
+    /**
+     * Check if a BSD event has at least home odds populated.
+     * BSD fields: odds_home, odds_draw, odds_away, odds_over_15,
+     *             odds_over_25, odds_over_35, odds_btts
+     */
+    private boolean hasOdds(JsonNode event) {
+        JsonNode oddsHome = event.path("odds_home");
+        return !oddsHome.isNull() && !oddsHome.isMissingNode() && oddsHome.asDouble(0) > 0;
     }
 
-    private WebClient client() {
+    private JsonNode executeBsd(Function<WebClient, String> call) {
+        try {
+            String response = call.apply(bsdClient());
+            if (response == null || response.isBlank()) return objectMapper.createObjectNode();
+            return objectMapper.readTree(response);
+        } catch (WebClientResponseException e) {
+            int status = e.getStatusCode().value();
+            if (status == 401 || status == 403) log.error("❌ [ODDS/BSD] Auth error {} — check BSD_API_KEY", status);
+            else if (status == 429)             log.warn("⚠️ [ODDS/BSD] Rate limit hit");
+            else                                log.error("❌ [ODDS/BSD] HTTP {}: {}", status, e.getMessage());
+            return objectMapper.createObjectNode();
+        } catch (Exception e) {
+            log.error("❌ [ODDS/BSD] Unexpected: {}", e.getMessage());
+            return objectMapper.createObjectNode();
+        }
+    }
+
+    private WebClient bsdClient() {
         return webClientBuilder.clone()
-                .baseUrl(ODDS_API_BASE)
+                .baseUrl(BSD_BASE_URL)
+                .defaultHeader("Authorization", "Token " + BSD_API_KEY)
                 .build();
     }
 }
