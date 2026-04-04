@@ -255,7 +255,7 @@ public class CorrectScoreMarketService {
                 .marketType(MarketType.CORRECT_SCORE)
                 .oddsAtPlacement(odds)
                 .selectionStatus(BetStatus.PENDING)
-                .correctScoreOptionId(option.getId())
+                .correctScoreOption(option)
                 .build();
 
         betSelectionRepository.save(selection);
@@ -346,8 +346,8 @@ public class CorrectScoreMarketService {
     }
 
     private boolean isWinningSelection(BetSelection sel, int finalHome, int finalAway, UUID gameId) {
-        if (sel.getCorrectScoreOptionId() == null) return false;
-        return correctScoreOptionRepository.findById(sel.getCorrectScoreOptionId())
+        if (sel.getCorrectScoreOption().getId() == null) return false;
+        return correctScoreOptionRepository.findById(sel.getCorrectScoreOption().getId())
                 .map(opt -> opt.getHomeScore() == finalHome && opt.getAwayScore() == finalAway)
                 .orElse(false);
     }
