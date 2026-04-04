@@ -9,19 +9,17 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
-
 @RestController
-@RequestMapping("/api/bets/history")
+@RequestMapping("/api/v1/bets")  // fix: add v1, and broaden the base path
 @RequiredArgsConstructor
 @PreAuthorize("hasRole('USER')")
 public class BetHistoryController {
 
     private final BetHistoryService betHistoryService;
 
-    @GetMapping
+    @GetMapping("/history")
     public ResponseEntity<UserBetHistoryResponse> getMyFullBetHistory(
             @AuthenticationPrincipal UUID userId) {
-
         return ResponseEntity.ok(betHistoryService.getFullBetHistory(userId));
     }
 }
