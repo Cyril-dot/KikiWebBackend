@@ -41,8 +41,7 @@ public class BetSelection {
     @Column(name = "selection_status")
     private BetStatus selectionStatus;
 
-    // For CORRECT_SCORE bets — stores which score option the user picked
-    // Used during settlement to match against the final score
-    @Column(name = "correct_score_option_id")
-    private UUID correctScoreOptionId;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "correct_score_option_id")
+    private CorrectScoreOption correctScoreOption;
 }

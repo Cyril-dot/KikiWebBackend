@@ -42,6 +42,8 @@ public class BetSlip {
     @Column(name = "actual_payout", precision = 19, scale = 2)
     private BigDecimal actualPayout;
 
+
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     @Builder.Default

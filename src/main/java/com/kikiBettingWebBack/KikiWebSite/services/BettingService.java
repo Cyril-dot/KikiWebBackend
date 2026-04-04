@@ -186,17 +186,22 @@ public class BettingService {
 
     BetSlipResponse toBetSlipResponse(BetSlip slip) {
         List<BetSlipResponse.SelectionDetail> selectionDetails = slip.getSelections().stream()
-                .map(sel -> BetSlipResponse.SelectionDetail.builder()
-                        .gameId(sel.getGame().getId())
-                        .homeTeam(sel.getGame().getHomeTeam())
-                        .awayTeam(sel.getGame().getAwayTeam())
-                        .matchDate(sel.getGame().getMatchDate())
-                        .marketType(sel.getMarketType())
-                        .oddsAtPlacement(sel.getOddsAtPlacement())
-                        .selectionStatus(sel.getSelectionStatus())
-                        .homeScore(sel.getHomeScore())   // ✅ ADDED
-                        .awayScore(sel.getAwayScore())   // ✅ ADDED
-                        .build())
+                .map(sel -> {
+                    // Pull selected score from CorrectScoreOption if this is a correct score bet
+                    CorrectScoreOption scoreOption = sel.getCorrectScoreOption();
+
+                    return BetSlipResponse.SelectionDetail.builder()
+                            .gameId(sel.getGame().getId())
+                            .homeTeam(sel.getGame().getHomeTeam())
+                            .awayTeam(sel.getGame().getAwayTeam())
+                            .matchDate(sel.getGame().getMatchDate())
+                            .marketType(sel.getMarketType())
+                            .oddsAtPlacement(sel.getOddsAtPlacement())
+                            .selectionStatus(sel.getSelectionStatus())
+                            .homeScore(scoreOption != null ? scoreOption.getHomeScore() : null)  // selected score
+                            .awayScore(scoreOption != null ? scoreOption.getAwayScore() : null)  // selected score
+                            .build();
+                })
                 .collect(Collectors.toList());
 
         return BetSlipResponse.builder()
