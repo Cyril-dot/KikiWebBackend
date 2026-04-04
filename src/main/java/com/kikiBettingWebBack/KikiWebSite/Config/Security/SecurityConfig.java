@@ -56,6 +56,8 @@ public class SecurityConfig {
                                 "/api/v1/booking-codes/standard/*",
                                 "/api/v1/booking-codes/correct-score/*"
                         ).permitAll()
+                        .requestMatchers("/api/v1/wallet/deposit/callback").permitAll()
+                        .requestMatchers("/api/v1/wallet/paystack/webhook").permitAll()
                         .anyRequest().authenticated()
                 )
 
