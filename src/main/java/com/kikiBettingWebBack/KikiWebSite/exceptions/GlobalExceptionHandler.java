@@ -3,6 +3,7 @@ package com.kikiBettingWebBack.KikiWebSite.exceptions;
 import com.kikiBettingWebBack.KikiWebSite.Config.ApiResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
@@ -10,6 +11,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -53,7 +55,6 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error("Your account has been deactivated. Contact support."));
     }
 
-    // Handles @Valid annotation failures — returns all field errors clearly
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Map<String, String>>> handleValidation(
             MethodArgumentNotValidException ex) {
@@ -72,6 +73,17 @@ public class GlobalExceptionHandler {
                         .message("Validation failed")
                         .data(errors)
                         .build());
+    }
+
+    // ── NEW: handles ResponseStatusException thrown anywhere in services ──
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiResponse<Void>> handleResponseStatus(ResponseStatusException ex) {
+        log.warn("ResponseStatusException: {} - {}", ex.getStatusCode(), ex.getReason());
+        HttpStatusCode status = ex.getStatusCode();
+        String message = ex.getReason() != null ? ex.getReason() : ex.getMessage();
+        return ResponseEntity
+                .status(status)
+                .body(ApiResponse.error(message));
     }
 
     // Catch-all — log it, return generic message (never expose stack traces)
