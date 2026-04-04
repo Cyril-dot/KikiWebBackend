@@ -22,12 +22,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -43,7 +40,7 @@ public class WalletService {
     private final TransactionRepository transactionRepository;
     private final WebClient paystackWebClient;
 
-    @Value("${app.paystack.secret-key}")          // ← was webhook-secret, now secret-key
+    @Value("${app.paystack.secret-key}")
     private String paystackSecretKey;
 
     @Value("${app.paystack.callback-url}")
@@ -125,7 +122,63 @@ public class WalletService {
     }
 
     // ---------------------------------------------------------------
+    // CALLBACK — user lands here after paying; we verify with Paystack
+    // and credit immediately. This is the fix for pending deposits.
+    // ---------------------------------------------------------------
+    @Transactional
+    public String handleDepositCallback(String reference) {
+
+        Transaction tx = transactionRepository.findByPaymentReference(reference)
+                .orElseThrow(() -> new ResourceNotFoundException("Transaction not found for reference: " + reference));
+
+        // Idempotency — already credited, nothing to do
+        if (tx.getStatus() == TransactionStatus.SUCCESS) {
+            log.info("Callback for ref {} already processed — skipping", reference);
+            return "already_processed";
+        }
+
+        // Verify with Paystack directly
+        Map<?, ?> response = paystackWebClient.get()
+                .uri("/transaction/verify/" + reference)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+
+        if (response == null || !(Boolean) response.get("status")) {
+            log.warn("Paystack verification failed for ref: {}", reference);
+            throw new BadRequestException("Payment verification failed. Please contact support.");
+        }
+
+        Map<?, ?> verifyData = (Map<?, ?>) response.get("data");
+        String paystackStatus = (String) verifyData.get("status");
+
+        if (!"success".equals(paystackStatus)) {
+            log.warn("Payment not successful for ref: {} — Paystack status: {}", reference, paystackStatus);
+            throw new BadRequestException("Payment was not completed. Status: " + paystackStatus);
+        }
+
+        // Credit the wallet
+        Wallet wallet = walletRepository.findByUserId(tx.getUser().getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
+
+        wallet.credit(tx.getAmount());
+        wallet.setTotalDeposited(wallet.getTotalDeposited().add(tx.getAmount()));
+        wallet.setHasEverDeposited(true);
+        walletRepository.save(wallet);
+
+        tx.setStatus(TransactionStatus.SUCCESS);
+        tx.setBalanceAfter(wallet.getBalance());
+        transactionRepository.save(tx);
+
+        log.info("Deposit credited via callback — user: {} | amount: {} | balance: {}",
+                tx.getUser().getEmail(), tx.getAmount(), wallet.getBalance());
+
+        return "success";
+    }
+
+    // ---------------------------------------------------------------
     // HANDLE PAYSTACK WEBHOOK — verifies signature and credits wallet
+    // (kept as a safety net alongside the callback above)
     // ---------------------------------------------------------------
     @Transactional
     public void handlePaystackWebhook(String payload, String paystackSignature) {
@@ -146,13 +199,13 @@ public class WalletService {
             return;
         }
 
-        // Idempotency check — same pattern as PaystackService
         Transaction tx = transactionRepository.findByPaymentReference(reference).orElse(null);
         if (tx == null) {
             log.warn("Webhook received for unknown reference: {} — skipping", reference);
             return;
         }
 
+        // Idempotency — callback may have already credited this
         if (tx.getStatus() == TransactionStatus.SUCCESS) {
             log.info("Webhook for ref {} already processed — skipping (idempotent)", reference);
             return;
@@ -170,7 +223,7 @@ public class WalletService {
         tx.setBalanceAfter(wallet.getBalance());
         transactionRepository.save(tx);
 
-        log.info("Wallet credited — user: {} | amount: {} | balance: {}",
+        log.info("Wallet credited via webhook — user: {} | amount: {} | balance: {}",
                 tx.getUser().getEmail(), tx.getAmount(), wallet.getBalance());
     }
 
@@ -294,7 +347,6 @@ public class WalletService {
 
     private boolean isValidSignature(String payload, String paystackSignature) {
         try {
-            // ← Now uses paystackSecretKey directly, matching PaystackService exactly
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA512");
             mac.init(new javax.crypto.spec.SecretKeySpec(
                     paystackSecretKey.getBytes(StandardCharsets.UTF_8), "HmacSHA512"));

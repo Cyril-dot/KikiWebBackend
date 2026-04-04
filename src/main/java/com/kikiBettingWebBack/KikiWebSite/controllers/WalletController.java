@@ -115,4 +115,11 @@ public class WalletController {
                 )
         ));
     }
+
+
+    @GetMapping("/wallet/deposit/callback")
+    public ResponseEntity<String> depositCallback(@RequestParam String reference) {
+        String result = walletService.handleDepositCallback(reference);
+        return ResponseEntity.ok(result);
+    }
 }
