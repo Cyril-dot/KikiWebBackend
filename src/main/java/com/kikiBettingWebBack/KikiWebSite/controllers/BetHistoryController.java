@@ -1,5 +1,6 @@
 package com.kikiBettingWebBack.KikiWebSite.controllers;
 
+import com.kikiBettingWebBack.KikiWebSite.Config.Security.UserPrincipal;
 import com.kikiBettingWebBack.KikiWebSite.dtos.UserBetHistoryResponse;
 import com.kikiBettingWebBack.KikiWebSite.services.BetHistoryService;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +20,7 @@ public class BetHistoryController {
 
     @GetMapping("/history")
     public ResponseEntity<UserBetHistoryResponse> getMyFullBetHistory(
-            @AuthenticationPrincipal UUID userId) {
-        return ResponseEntity.ok(betHistoryService.getFullBetHistory(userId));
+            @AuthenticationPrincipal UserPrincipal userPrincipal) {
+        return ResponseEntity.ok(betHistoryService.getFullBetHistory(userPrincipal.getUserId()));
     }
 }
