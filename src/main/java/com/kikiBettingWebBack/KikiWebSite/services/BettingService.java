@@ -194,6 +194,8 @@ public class BettingService {
                         .marketType(sel.getMarketType())
                         .oddsAtPlacement(sel.getOddsAtPlacement())
                         .selectionStatus(sel.getSelectionStatus())
+                        .homeScore(sel.getHomeScore())   // ✅ ADDED
+                        .awayScore(sel.getAwayScore())   // ✅ ADDED
                         .build())
                 .collect(Collectors.toList());
 

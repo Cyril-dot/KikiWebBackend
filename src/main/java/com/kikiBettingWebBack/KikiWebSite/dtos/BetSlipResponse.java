@@ -1,6 +1,5 @@
 package com.kikiBettingWebBack.KikiWebSite.dtos;
 
-
 import com.kikiBettingWebBack.KikiWebSite.entities.*;
 import lombok.Builder;
 import lombok.Data;
@@ -34,5 +33,7 @@ public class BetSlipResponse {
         private MarketType marketType;
         private BigDecimal oddsAtPlacement;
         private BetStatus selectionStatus;
+        private Integer homeScore;   // ✅ ADDED
+        private Integer awayScore;   // ✅ ADDED
     }
 }
