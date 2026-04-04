@@ -2,6 +2,8 @@ package com.kikiBettingWebBack.KikiWebSite.entities;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.NotFound;
+import org.hibernate.annotations.NotFoundAction;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -41,6 +43,7 @@ public class BetSelection {
     @Column(name = "selection_status")
     private BetStatus selectionStatus;
 
+    @NotFound(action = NotFoundAction.IGNORE)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "correct_score_option_id")
     private CorrectScoreOption correctScoreOption;
