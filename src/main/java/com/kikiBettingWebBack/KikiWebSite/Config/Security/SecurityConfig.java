@@ -53,6 +53,7 @@ public class SecurityConfig {
                                 "/api/football/**",      // your /api/football controller
                                 "/api/v1/payment/webhook",
                                 "/fetch/api/games/**",
+                                "/api/v1/games/public",
                                 "/api/v1/booking-codes/standard/*",
                                 "/api/v1/booking-codes/correct-score/*"
                         ).permitAll()
