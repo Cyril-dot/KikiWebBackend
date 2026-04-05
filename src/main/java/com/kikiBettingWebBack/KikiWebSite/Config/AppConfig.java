@@ -6,6 +6,8 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.codec.ClientCodecConfigurer;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
@@ -22,6 +24,13 @@ public class AppConfig {
 
     @Bean
     public WebClient.Builder webClientBuilder() {
-        return WebClient.builder();
+        ExchangeStrategies strategies = ExchangeStrategies.builder()
+                .codecs(configurer -> configurer
+                        .defaultCodecs()
+                        .maxInMemorySize(20 * 1024 * 1024)) // 10MB
+                .build();
+
+        return WebClient.builder()
+                .exchangeStrategies(strategies);
     }
 }
