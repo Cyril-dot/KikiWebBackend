@@ -21,10 +21,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -61,8 +63,22 @@ public class WalletService {
     @Transactional
     public DepositInitiateResponse initiateDeposit(UUID userId, DepositInitiateRequest request) {
 
+        // ── NULL GUARD: userId
+        if (userId == null) {
+            throw new BadRequestException("Authentication error: user ID is null. Please log in again.");
+        }
+
         User user = getUser(userId);
-        String currency = user.getCurrency();
+
+        // ── NULL GUARD: currency — fallback to GHS if not set on user
+        String currency = (user.getCurrency() != null && !user.getCurrency().isBlank())
+                ? user.getCurrency()
+                : "GHS";
+
+        // ── NULL GUARD: amount
+        if (request.getAmount() == null) {
+            throw new BadRequestException("Deposit amount is required.");
+        }
 
         if (request.getAmount().compareTo(minDeposit) < 0) {
             throw new BadRequestException(
@@ -72,33 +88,63 @@ public class WalletService {
         String internalRef = "DEP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
         int amountInSmallestUnit = request.getAmount().multiply(BigDecimal.valueOf(100)).intValue();
 
-        Map<String, Object> paystackBody = Map.of(
-                "email",        user.getEmail(),
-                "amount",       amountInSmallestUnit,
-                "currency",     currency,
-                "reference",    internalRef,
-                "callback_url", callbackUrl,
-                "metadata", Map.of(
-                        "userId",      userId.toString(),
-                        "currency",    currency,
-                        "internalRef", internalRef
-                )
-        );
+        // Use a mutable map so we can build it safely
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("userId",      userId.toString());
+        metadata.put("currency",    currency);
+        metadata.put("internalRef", internalRef);
 
-        Map<?, ?> paystackResponse = paystackWebClient.post()
-                .uri("/transaction/initialize")
-                .bodyValue(paystackBody)
-                .retrieve()
-                .bodyToMono(Map.class)
-                .block();
+        Map<String, Object> paystackBody = new HashMap<>();
+        paystackBody.put("email",        user.getEmail());
+        paystackBody.put("amount",       amountInSmallestUnit);
+        paystackBody.put("currency",     currency);
+        paystackBody.put("reference",    internalRef);
+        paystackBody.put("callback_url", callbackUrl);
+        paystackBody.put("metadata",     metadata);
 
-        if (paystackResponse == null || !(Boolean) paystackResponse.get("status")) {
-            throw new BadRequestException("Failed to initiate payment. Please try again.");
+        log.info("Initiating deposit — user: {} | amount: {} | currency: {} | ref: {}",
+                user.getEmail(), request.getAmount(), currency, internalRef);
+
+        Map<?, ?> paystackResponse;
+        try {
+            paystackResponse = paystackWebClient.post()
+                    .uri("/transaction/initialize")
+                    .bodyValue(paystackBody)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            log.error("Paystack API error — status: {} | body: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            throw new BadRequestException("Payment provider error: " + e.getStatusCode() +
+                    ". Please try again or contact support.");
+        } catch (Exception e) {
+            log.error("Paystack WebClient call failed: {}", e.getMessage(), e);
+            throw new BadRequestException("Could not reach payment provider. Please try again.");
+        }
+
+        if (paystackResponse == null) {
+            throw new BadRequestException("No response from payment provider. Please try again.");
+        }
+
+        Object statusObj = paystackResponse.get("status");
+        if (!(Boolean.TRUE.equals(statusObj))) {
+            Object msgObj = paystackResponse.get("message");
+            String msg = msgObj instanceof String ? (String) msgObj : "Payment initiation failed.";
+            log.warn("Paystack returned status=false for ref: {} — message: {}", internalRef, msg);
+            throw new BadRequestException("Payment provider declined: " + msg);
         }
 
         Map<?, ?> data = (Map<?, ?>) paystackResponse.get("data");
+        if (data == null) {
+            throw new BadRequestException("Invalid response from payment provider — missing data.");
+        }
+
         String authorizationUrl = (String) data.get("authorization_url");
         String paystackRef      = (String) data.get("reference");
+
+        if (authorizationUrl == null || authorizationUrl.isBlank()) {
+            throw new BadRequestException("Payment provider did not return a payment URL. Please try again.");
+        }
 
         transactionRepository.save(Transaction.builder()
                 .user(user)
@@ -121,10 +167,7 @@ public class WalletService {
     }
 
     // ---------------------------------------------------------------
-    // VERIFY DEPOSIT — called by frontend after Paystack redirect
-    // THIS IS THE FIX: Paystack redirects the browser to callback_url,
-    // it does NOT post to your backend. Your frontend must extract
-    // ?reference= from the URL and call this endpoint to credit the wallet.
+    // VERIFY DEPOSIT
     // ---------------------------------------------------------------
     @Transactional
     public String verifyDeposit(String reference) {
@@ -138,11 +181,20 @@ public class WalletService {
             return "already_processed";
         }
 
-        Map<?, ?> response = paystackWebClient.get()
-                .uri("/transaction/verify/" + reference)
-                .retrieve()
-                .bodyToMono(Map.class)
-                .block();
+        Map<?, ?> response;
+        try {
+            response = paystackWebClient.get()
+                    .uri("/transaction/verify/" + reference)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            log.error("Paystack verify error — status: {} | body: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            throw new BadRequestException("Could not verify payment with provider. Please contact support.");
+        } catch (Exception e) {
+            log.error("Paystack verify call failed for ref: {}: {}", reference, e.getMessage(), e);
+            throw new BadRequestException("Could not reach payment provider for verification.");
+        }
 
         if (response == null || !(Boolean) response.get("status")) {
             log.warn("Paystack verification failed for ref: {}", reference);
@@ -176,7 +228,7 @@ public class WalletService {
     }
 
     // ---------------------------------------------------------------
-    // HANDLE PAYSTACK WEBHOOK — safety net alongside verifyDeposit
+    // HANDLE PAYSTACK WEBHOOK
     // ---------------------------------------------------------------
     @Transactional
     public void handlePaystackWebhook(String payload, String paystackSignature) {
@@ -230,8 +282,14 @@ public class WalletService {
     @Transactional
     public WithdrawResponse withdraw(UUID userId, WithdrawRequest request) {
 
+        if (userId == null) {
+            throw new BadRequestException("Authentication error: user ID is null. Please log in again.");
+        }
+
         User user = getUser(userId);
-        String currency = user.getCurrency();
+        String currency = (user.getCurrency() != null && !user.getCurrency().isBlank())
+                ? user.getCurrency()
+                : "GHS";
 
         Wallet wallet = walletRepository.findByUserId(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
@@ -310,20 +368,20 @@ public class WalletService {
         try {
             int amountInSmallestUnit = amount.multiply(BigDecimal.valueOf(100)).intValue();
 
-            Map<String, Object> body = Map.of(
-                    "source",    "balance",
-                    "amount",    amountInSmallestUnit,
-                    "currency",  currency,
-                    "reference", reference,
-                    "recipient", Map.of(
-                            "type",           "mobile_money",
-                            "name",           request.getAccountName(),
-                            "account_number", request.getAccountNumber(),
-                            "bank_code",      request.getBankCode(),
-                            "currency",       currency
-                    ),
-                    "reason", "Betting platform withdrawal"
-            );
+            Map<String, Object> recipient = new HashMap<>();
+            recipient.put("type",           "mobile_money");
+            recipient.put("name",           request.getAccountName());
+            recipient.put("account_number", request.getAccountNumber());
+            recipient.put("bank_code",      request.getBankCode());
+            recipient.put("currency",       currency);
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("source",    "balance");
+            body.put("amount",    amountInSmallestUnit);
+            body.put("currency",  currency);
+            body.put("reference", reference);
+            body.put("recipient", recipient);
+            body.put("reason",    "Betting platform withdrawal");
 
             paystackWebClient.post()
                     .uri("/transfer")
