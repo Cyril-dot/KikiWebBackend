@@ -56,7 +56,7 @@ public class WalletService {
     private BigDecimal minWithdrawBalance;
 
     // ---------------------------------------------------------------
-    // INITIATE DEPOSIT — creates Paystack payment link
+    // INITIATE DEPOSIT
     // ---------------------------------------------------------------
     @Transactional
     public DepositInitiateResponse initiateDeposit(UUID userId, DepositInitiateRequest request) {
@@ -100,16 +100,15 @@ public class WalletService {
         String authorizationUrl = (String) data.get("authorization_url");
         String paystackRef      = (String) data.get("reference");
 
-        Transaction pendingTx = Transaction.builder()
+        transactionRepository.save(Transaction.builder()
                 .user(user)
                 .type(TransactionType.DEPOSIT)
                 .status(TransactionStatus.PENDING)
                 .amount(request.getAmount())
                 .paymentReference(internalRef)
                 .description("Deposit via Paystack — " + currency)
-                .build();
+                .build());
 
-        transactionRepository.save(pendingTx);
         log.info("Deposit initiated for user {} — ref: {}", user.getEmail(), internalRef);
 
         return DepositInitiateResponse.builder()
@@ -122,22 +121,23 @@ public class WalletService {
     }
 
     // ---------------------------------------------------------------
-    // CALLBACK — user lands here after paying; we verify with Paystack
-    // and credit immediately. This is the fix for pending deposits.
+    // VERIFY DEPOSIT — called by frontend after Paystack redirect
+    // THIS IS THE FIX: Paystack redirects the browser to callback_url,
+    // it does NOT post to your backend. Your frontend must extract
+    // ?reference= from the URL and call this endpoint to credit the wallet.
     // ---------------------------------------------------------------
     @Transactional
-    public String handleDepositCallback(String reference) {
+    public String verifyDeposit(String reference) {
 
         Transaction tx = transactionRepository.findByPaymentReference(reference)
-                .orElseThrow(() -> new ResourceNotFoundException("Transaction not found for reference: " + reference));
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Transaction not found for reference: " + reference));
 
-        // Idempotency — already credited, nothing to do
         if (tx.getStatus() == TransactionStatus.SUCCESS) {
-            log.info("Callback for ref {} already processed — skipping", reference);
+            log.info("Deposit already credited for ref: {} — skipping", reference);
             return "already_processed";
         }
 
-        // Verify with Paystack directly
         Map<?, ?> response = paystackWebClient.get()
                 .uri("/transaction/verify/" + reference)
                 .retrieve()
@@ -157,7 +157,6 @@ public class WalletService {
             throw new BadRequestException("Payment was not completed. Status: " + paystackStatus);
         }
 
-        // Credit the wallet
         Wallet wallet = walletRepository.findByUserId(tx.getUser().getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
 
@@ -170,15 +169,14 @@ public class WalletService {
         tx.setBalanceAfter(wallet.getBalance());
         transactionRepository.save(tx);
 
-        log.info("Deposit credited via callback — user: {} | amount: {} | balance: {}",
+        log.info("Deposit credited — user: {} | amount: {} | balance: {}",
                 tx.getUser().getEmail(), tx.getAmount(), wallet.getBalance());
 
         return "success";
     }
 
     // ---------------------------------------------------------------
-    // HANDLE PAYSTACK WEBHOOK — verifies signature and credits wallet
-    // (kept as a safety net alongside the callback above)
+    // HANDLE PAYSTACK WEBHOOK — safety net alongside verifyDeposit
     // ---------------------------------------------------------------
     @Transactional
     public void handlePaystackWebhook(String payload, String paystackSignature) {
@@ -205,7 +203,6 @@ public class WalletService {
             return;
         }
 
-        // Idempotency — callback may have already credited this
         if (tx.getStatus() == TransactionStatus.SUCCESS) {
             log.info("Webhook for ref {} already processed — skipping (idempotent)", reference);
             return;
@@ -254,8 +251,7 @@ public class WalletService {
                 .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
         BigDecimal amountReceived = requestedAmount.subtract(fee);
 
-        BigDecimal balanceAfter = wallet.getBalance().subtract(requestedAmount);
-        if (balanceAfter.compareTo(BigDecimal.ZERO) < 0) {
+        if (wallet.getBalance().subtract(requestedAmount).compareTo(BigDecimal.ZERO) < 0) {
             throw new BadRequestException("Insufficient balance for this withdrawal amount");
         }
 
@@ -265,7 +261,7 @@ public class WalletService {
 
         String reference = "WDR-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
-        Transaction tx = Transaction.builder()
+        transactionRepository.save(Transaction.builder()
                 .user(user)
                 .type(TransactionType.WITHDRAWAL)
                 .status(TransactionStatus.SUCCESS)
@@ -274,9 +270,8 @@ public class WalletService {
                 .paymentReference(reference)
                 .description(String.format("Withdrawal — fee: %s %.2f | received: %s %.2f",
                         currency, fee, currency, amountReceived))
-                .build();
+                .build());
 
-        transactionRepository.save(tx);
         initiatePaystackTransfer(amountReceived, currency, request, reference, user.getEmail());
 
         log.info("Withdrawal processed — user: {} | amount: {} | fee: {} | received: {}",

@@ -49,8 +49,8 @@ public class SecurityConfig {
                                 "/api/v1/users/register",
                                 "/api/v1/users/login",
                                 "/test/**",
-                                "/api/v1/football/**",   // your v1 football controller
-                                "/api/football/**",      // your /api/football controller
+                                "/api/v1/football/**",
+                                "/api/football/**",
                                 "/api/v1/payment/webhook",
                                 "/fetch/api/games/**",
                                 "/api/v1/games/public",
@@ -58,6 +58,7 @@ public class SecurityConfig {
                                 "/api/v1/booking-codes/correct-score/*"
                         ).permitAll()
                         .requestMatchers("/api/v1/wallet/deposit/callback").permitAll()
+                        .requestMatchers("/api/v1/wallet/deposit/verify/**").permitAll() // ADDED
                         .requestMatchers("/api/v1/wallet/paystack/webhook").permitAll()
                         .anyRequest().authenticated()
                 )
